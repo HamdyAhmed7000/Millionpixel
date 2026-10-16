@@ -1,0 +1,2 @@
+[functions.expire-listings]
+verify_jwt = false
