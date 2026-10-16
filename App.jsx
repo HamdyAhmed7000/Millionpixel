@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { hasSupabaseConfig, supabase } from './supabase.js';
+import CommunityGames, { spotPrestige, achievementLabels } from './CommunityGames.jsx';
 
 const MAP_SIZE = 1000;
-const LANDMARKS = [{ slot: 1, name: 'The beginning' }, { slot: 499500, name: 'Heart of the canvas' }, { slot: 500501, name: 'Center crossroads' }, { slot: 1000000, name: 'The final pixel' }];
+const LANDMARKS = [{ slot: 1, name: 'The beginning' }, { slot: 499500, name: 'Heart of the canvas' }, { slot: 500501, name: 'Center crossroads' }, { slot: 1000000, name: 'The final pixel' }, { slot: 777778, name: 'Lucky 777' }];
 function landmarkName(slot) { return LANDMARKS.find(item => item.slot === Number(slot))?.name; }
 function relativeTime(date, now) {
   const minutes = Math.max(0, Math.floor((now - new Date(date).getTime()) / 60000));
@@ -43,6 +44,26 @@ function App() {
   const view = useRef({ width: 0, height: 0, baseScale: 0, scale: 0, panX: 0, panY: 0 });
   const drag = useRef(null);
   const [activityNow, setActivityNow] = useState(Date.now());
+  const [gameData, setGameData] = useState(null);
+  const [gameError, setGameError] = useState('');
+  const [heatmap, setHeatmap] = useState(false);
+  const [territories, setTerritories] = useState(false);
+  const [huntMode, setHuntMode] = useState(false);
+  const [huntBusy, setHuntBusy] = useState(false);
+  const gameVisitor = useRef(null);
+  const hoveredGameSpots = useRef(new Set());
+  const getGameVisitor = () => {
+    if (gameVisitor.current) return gameVisitor.current;
+    try { let value = localStorage.getItem('million-pixel-visitor-id'); if (!value) { value = crypto.randomUUID(); localStorage.setItem('million-pixel-visitor-id', value); } gameVisitor.current = value; }
+    catch { gameVisitor.current = crypto.randomUUID(); }
+    return gameVisitor.current;
+  };
+  const refreshGames = useCallback(async () => {
+    if (!supabase) return;
+    try { const { data, error } = await supabase.rpc('get_canvas_games'); if (error) { setGameError('Community features are temporarily unavailable.'); return; } setGameData(data); setGameError(''); }
+    catch { setGameError('Community features are temporarily unavailable.'); }
+  }, []);
+
   const sharedSpotOpened = useRef(false);
   useEffect(() => { const timer = setInterval(() => setActivityNow(Date.now()), 60000); return () => clearInterval(timer); }, []);
   const [showSamples, setShowSamples] = useState(true);
@@ -61,6 +82,12 @@ function App() {
   }, [showGuide]);
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
+  useEffect(() => {
+    setGameData(null); refreshGames();
+    const timer = setInterval(refreshGames, 30000);
+    return () => clearInterval(timer);
+  }, [session?.user?.id, refreshGames]);
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authMessage, setAuthMessage] = useState('');
@@ -71,6 +98,12 @@ function App() {
   const [selectedSpotSize, setSelectedSpotSize] = useState(1);
   const [hoveredSlot, setHoveredSlot] = useState(null);
   const [hoveredPoint, setHoveredPoint] = useState(null);
+  useEffect(() => {
+    if (!hoveredSlot || !supabase || !published.some(item => Number(item.slot_number) === hoveredSlot) || hoveredGameSpots.current.has(hoveredSlot)) return;
+    const timer = setTimeout(() => { hoveredGameSpots.current.add(hoveredSlot); supabase.rpc('record_canvas_interaction', { p_slot: hoveredSlot, p_visitor: getGameVisitor(), p_kind: 'hover' }); }, 800);
+    return () => clearTimeout(timer);
+  }, [hoveredSlot, published]);
+
   const [previewStyle, setPreviewStyle] = useState('default');
   const [browseView, setBrowseView] = useState('gallery');
   const [gallerySpots, setGallerySpots] = useState([]);
@@ -282,6 +315,7 @@ function App() {
     if (!supabase) return;
     let visitorId = window.localStorage.getItem('million-pixel-visitor-id');
     if (!visitorId) { visitorId = crypto.randomUUID(); window.localStorage.setItem('million-pixel-visitor-id', visitorId); }
+    await supabase.rpc('record_canvas_interaction', { p_slot: slotNumber, p_visitor: visitorId, p_kind: 'click' });
     const { error } = await supabase.rpc('record_public_spot_view', { p_slot_number: slotNumber, p_visitor_id: visitorId });
     if (error) console.warn('Spot view could not be recorded. Apply migration 0004 to enable popularity stats.', error);
   }, []);
@@ -345,6 +379,21 @@ function App() {
       ctx.font = '10px monospace'; ctx.fillStyle = '#829785';
       for (let x = Math.ceil(bounds.minX / (step * 4)) * step * 4; x <= bounds.maxX; x += step * 4) ctx.fillText(`X ${x}`, toScreen(x, 0).x + 4, Math.max(14, topLeft.y + 14));
     }
+
+    if (heatmap) {
+      const peak = Math.max(1, ...(gameData?.heatmap || []).map(item => Number(item.interactions)));
+      for (const item of gameData?.heatmap || []) {
+        const { x, y } = slotCoordinates(item.slot); const p = toScreen(x + .5, y + .5); const radius = Math.max(14, Math.min(70, scale * 4));
+        const intensity = Math.sqrt(Number(item.interactions) / peak); const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius);
+        glow.addColorStop(0, `rgba(255,100,54,${.3 + intensity * .5})`); glow.addColorStop(1, 'rgba(255,160,50,0)'); ctx.fillStyle = glow; ctx.fillRect(p.x - radius, p.y - radius, radius * 2, radius * 2);
+      }
+    }
+    if (territories) {
+      for (const cell of gameData?.territory || []) {
+        const { x, y } = slotCoordinates(cell.slot), p = toScreen(x, y); let hue = 0; for (const char of cell.guild_id) hue = (hue * 31 + char.charCodeAt(0)) % 360;
+        ctx.fillStyle = `hsla(${hue},75%,65%,.45)`; ctx.fillRect(p.x, p.y, Math.max(3, scale), Math.max(3, scale));
+      }
+    }
     const anchors = published.filter(item => Number(item.anchor_slot) === Number(item.slot_number));
     if (!mosaicRef.current) { mosaicRef.current = document.createElement('canvas'); mosaicRef.current.width = MAP_SIZE; mosaicRef.current.height = MAP_SIZE; }
     if (mosaicDirty.current) {
@@ -391,6 +440,23 @@ function App() {
       ctx.font = `${Math.min(18, Math.max(10, scale * .58))}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('✦', p.x + scale / 2, p.y + scale / 2); ctx.restore();
     }
+
+    if (territories) {
+      const owners = new Map((gameData?.territory || []).map(cell => [Number(cell.slot), cell.guild_id]));
+      for (const cell of gameData?.territory || []) {
+        const { x, y } = slotCoordinates(cell.slot), p = toScreen(x, y); let hue = 0; for (const char of cell.guild_id) hue = (hue * 31 + char.charCodeAt(0)) % 360;
+        ctx.strokeStyle = `hsl(${hue},80%,70%)`; ctx.lineWidth = 2; ctx.beginPath();
+        if (x === 0 || owners.get(cell.slot - 1) !== cell.guild_id) { ctx.moveTo(p.x, p.y); ctx.lineTo(p.x, p.y + scale); }
+        if (x === 999 || owners.get(cell.slot + 1) !== cell.guild_id) { ctx.moveTo(p.x + scale, p.y); ctx.lineTo(p.x + scale, p.y + scale); }
+        if (owners.get(cell.slot - 1000) !== cell.guild_id) { ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + scale, p.y); }
+        if (owners.get(cell.slot + 1000) !== cell.guild_id) { ctx.moveTo(p.x, p.y + scale); ctx.lineTo(p.x + scale, p.y + scale); }
+        ctx.stroke();
+      }
+    }
+    if (gameData?.champion) {
+      const { x, y } = slotCoordinates(gameData.champion); const p = toScreen(x, y); ctx.save(); ctx.strokeStyle = '#87fff0'; ctx.shadowColor = '#42ffdd'; ctx.shadowBlur = 16; ctx.lineWidth = 3;
+      ctx.strokeRect(p.x - 2, p.y - 2, Math.max(8, scale + 4), Math.max(8, scale + 4)); ctx.restore();
+    }
     for (const landmark of LANDMARKS) {
       const { x, y } = slotCoordinates(landmark.slot); const p = toScreen(x + .5, y + .5);
       if (p.x < 0 || p.y < 0 || p.x > width || p.y > height) continue;
@@ -401,7 +467,7 @@ function App() {
       const { x, y } = slotCoordinates(selectedSlot); const p = toScreen(x, y);
       ctx.strokeStyle = '#c4f06b'; ctx.lineWidth = 2; ctx.strokeRect(p.x + 1, p.y + 1, Math.max(2, scale * selectedSpotSize - 2), Math.max(2, scale * selectedSpotSize - 2));
     }
-  }, [published, selectedSlot, selectedSpotSize, hoveredSlot, previewStyle, visibleBounds]);
+  }, [published, selectedSlot, selectedSpotSize, hoveredSlot, previewStyle, visibleBounds, heatmap, territories, gameData]);
 
   const updateVisible = useCallback(() => {
     render();
@@ -652,9 +718,9 @@ function App() {
     requestPixelClaim(slot); updateVisible();
   };
 
-  const focusSlot = slot => {
+  const focusSlot = (slot, zoom = 30) => {
     setBrowseView('map');
-    const v = view.current; const { x, y } = slotCoordinates(slot); const scale = Math.max(v.scale, v.baseScale * 30);
+    const v = view.current; const { x, y } = slotCoordinates(slot); const scale = Math.max(v.scale, v.baseScale * zoom);
     animateView({ scale, panX: -(x + .5 - MAP_SIZE / 2) * scale, panY: -(y + .5 - MAP_SIZE / 2) * scale });
     setSelectedSlot(slot); updateVisible();
   };
@@ -694,6 +760,13 @@ function App() {
     zoomAt(factor, x, y, 180);
   };
 
+  const searchGoldenPixel = async slot => {
+    if (huntBusy) return;
+    if (!session?.user) { setAuthMode('signin'); setAuthMessage('Sign in to collect a golden pixel.'); setDrawer('signin'); return; }
+    setHuntBusy(true);
+    try { const { data, error } = await supabase.rpc('find_canvas_golden_pixel', { p_slot: slot }); if (error) notify(error.message); else if (data) { notify('Golden pixel found! Your Golden Explorer badge is saved.'); refreshGames(); } else notify(`Spot #${slot.toLocaleString()}: keep looking inside the clue area.`); }
+    catch { notify('Could not check this pixel. Please try again.'); } finally { setHuntBusy(false); }
+  };
   const mapPointerDown = event => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     if (viewAnimation.current) { cancelAnimationFrame(viewAnimation.current); viewAnimation.current = null; }
@@ -751,6 +824,7 @@ function App() {
       if (x >= 0 && y >= 0 && x < MAP_SIZE && y < MAP_SIZE) {
         const slot = Math.floor(y) * MAP_SIZE + Math.floor(x) + 1;
         const publishedImage = published.find(item => Number(item.slot_number) === slot);
+        if (huntMode) { if (view.current.scale < view.current.baseScale * 40) { notify('Zoom in further to search for a golden pixel.'); return; } searchGoldenPixel(slot); return; }
         if (publishedImage) openPublishedSpot(publishedImage);
         else if (v.scale < v.baseScale * 10) notify('Zoom in to choose an individual pixel.');
         else requestPixelClaim(slot);
@@ -842,7 +916,7 @@ function App() {
     zoomToSlot(slot);
   };
   const claimedPercent = usedSlotCount == null ? null : usedSlotCount / 10000;
-  const galleryResults = gallerySpots.filter(item => `${item.display_name} ${item.description || ''} ${item.anchor_slot}`.toLowerCase().includes(galleryQuery.trim().toLowerCase()));
+  const galleryResults = gallerySpots.filter(item => `${item.display_name} ${item.description || ''} ${item.anchor_slot}`.toLowerCase().includes(galleryQuery.trim().toLowerCase())).sort((a, b) => Number(b.anchor_slot === gameData?.champion) - Number(a.anchor_slot === gameData?.champion));
   const viewerSpots = selectedImage && !galleryResults.some(item => Number(item.anchor_slot) === Number(selectedImage.anchor_slot || selectedImage.slot_number)) ? [selectedImage, ...galleryResults] : galleryResults;
   const viewerIndex = selectedImage ? viewerSpots.findIndex(item => Number(item.anchor_slot || item.slot_number) === Number(selectedImage.anchor_slot || selectedImage.slot_number)) : -1;
   const browseImage = direction => {
@@ -919,7 +993,7 @@ function App() {
         <section className={`workspace ${browseView === 'gallery' ? 'gallery-mode' : ''}`} id="canvas">
           <div className="canvas-heading"><div><div className="eyebrow">The canvas <span className="prototype-tag">LIVE PROJECT</span></div><h2>One million possibilities</h2></div><div className="canvas-count"><strong>1,000,000</strong><span>numbered slots</span></div></div>
           <div className="browse-view-bar"><div role="group" aria-label="Browse view"><button className={browseView === 'gallery' ? 'active' : ''} aria-pressed={browseView === 'gallery'} onClick={() => setBrowseView('gallery')}>▦ Image gallery</button><button className={browseView === 'map' ? 'active' : ''} aria-pressed={browseView === 'map'} onClick={() => setBrowseView('map')}>⊞ Numbered canvas</button></div><span>Open an image · Swipe left or right to explore</span></div>
-          {browseView === 'gallery' && <section className="photo-gallery" aria-label="Published image gallery"><div className="gallery-search"><label htmlFor="gallery-search">Explore the images</label><input id="gallery-search" type="search" value={galleryQuery} onChange={event => setGalleryQuery(event.target.value)} placeholder="Search loaded images by creator, story or spot…" /><span>{usedSlotCount == null ? 'Loading…' : `${usedSlotCount.toLocaleString()} published spots`}</span></div><div className="masonry-photos">{galleryResults.map(spot => <article className="gallery-photo" key={spot.anchor_slot}><button className="gallery-photo-open" onClick={() => openPublishedSpot(spot)} aria-label={`Open image by ${spot.display_name}, Spot #${spot.anchor_slot}`}><img src={spot.imageUrl} alt={spot.description?.trim() || `Image by ${spot.display_name}`} loading="lazy" /><span className="gallery-photo-overlay"><b>{spot.display_name}</b><small>Spot #{Number(spot.anchor_slot).toLocaleString()} · Open ↗</small></span></button></article>)}</div>{galleryError && <p role="alert">{galleryError} <button className="text-button" onClick={() => setGalleryRetry(value => value + 1)}>Retry loading</button></p>}{!galleryBusy && !galleryError && !galleryResults.length && <p className="gallery-empty">{galleryQuery ? 'No matching images in the loaded gallery. Try another search or load more below.' : 'The first stories are on their way. Claim a spot and help fill this gallery.'}</p>}{galleryBusy && <p role="status" className="gallery-empty">Loading images…</p>}{galleryMore && <button className="button button-outline gallery-load" disabled={galleryBusy} onClick={() => setGalleryPage(page => page + 1)}>{galleryBusy ? 'Loading…' : 'Load more images ↓'}</button>}<p className="gallery-footnote">Only approved, active images are shown. Each image keeps its own proportions.</p></section>}
+          {browseView === 'gallery' && <section className="photo-gallery" aria-label="Published image gallery"><div className="gallery-search"><label htmlFor="gallery-search">Explore the images</label><input id="gallery-search" type="search" value={galleryQuery} onChange={event => setGalleryQuery(event.target.value)} placeholder="Search loaded images by creator, story or spot…" /><span>{usedSlotCount == null ? 'Loading…' : `${usedSlotCount.toLocaleString()} published spots`}</span></div><div className="masonry-photos">{galleryResults.map(spot => <article className={`gallery-photo ${Number(spot.anchor_slot) === gameData?.champion ? 'battle-champion' : ''} ${(gameData?.decorations || []).some(item => item.slot === Number(spot.anchor_slot) && item.golden_explorer) ? 'golden-photo' : ''}`} key={spot.anchor_slot}><button className="gallery-photo-open" onClick={() => openPublishedSpot(spot)} aria-label={`Open image by ${spot.display_name}, Spot #${spot.anchor_slot}`}><img src={spot.imageUrl} alt={spot.description?.trim() || `Image by ${spot.display_name}`} loading="lazy" /><span className="gallery-photo-overlay"><b>{spot.display_name}</b><small>Spot #{Number(spot.anchor_slot).toLocaleString()} · Open ↗</small>{spotPrestige(spot.anchor_slot) && <small>{spotPrestige(spot.anchor_slot)}</small>}{Number(spot.anchor_slot) === gameData?.champion && <small>⚡ Battle champion</small>}</span></button></article>)}</div>{galleryError && <p role="alert">{galleryError} <button className="text-button" onClick={() => setGalleryRetry(value => value + 1)}>Retry loading</button></p>}{!galleryBusy && !galleryError && !galleryResults.length && <p className="gallery-empty">{galleryQuery ? 'No matching images in the loaded gallery. Try another search or load more below.' : 'The first stories are on their way. Claim a spot and help fill this gallery.'}</p>}{galleryBusy && <p role="status" className="gallery-empty">Loading images…</p>}{galleryMore && <button className="button button-outline gallery-load" disabled={galleryBusy} onClick={() => setGalleryPage(page => page + 1)}>{galleryBusy ? 'Loading…' : 'Load more images ↓'}</button>}<p className="gallery-footnote">Only approved, active images are shown. Each image keeps its own proportions.</p></section>}
           <section className="founding-progress" aria-label="Canvas progress" aria-busy={usedSlotCount == null}><div><span className="eyebrow">THE FOUNDING CHAPTER</span><h3>{claimedPercent == null ? 'Loading canvas progress…' : `${claimedPercent.toLocaleString('en-US', { maximumFractionDigits: 4 })}% claimed`}</h3><p>The first 100 spots start the story. Make one yours.</p></div><div className="founding-meter"><div className="meter-caption"><b>Founding 100 spots</b><span>{usedSlotCount == null ? '—' : Math.min(100, usedSlotCount)} / 100</span></div><progress aria-label="Published spots toward the first 100" max="100" value={Math.min(100, usedSlotCount || 0)} /><small>{usedSlotCount == null ? 'Checking availability…' : `${usedSlotCount.toLocaleString()} published · ${(1000000 - usedSlotCount).toLocaleString()} available across the full canvas`}</small></div></section>
           {spotlight && <article className="daily-spotlight"><img src={supabase.storage.from('published-images').getPublicUrl(spotlight.image_path).data.publicUrl} alt={`Spotlight artwork by ${spotlight.display_name}`} /><div><span className="eyebrow">TODAY’S COMMUNITY SPOTLIGHT</span><h3>{spotlight.display_name}</h3><p>Spot #{Number(spotlight.anchor_slot).toLocaleString()} · Published {new Date(spotlight.published_at).toLocaleDateString()}</p><small>A daily rotation among recent approved spots.</small></div><button className="button button-outline" onClick={() => { setShowSamples(false); goToPixel(undefined, spotlight.anchor_slot); }}>Meet this creator ↗</button></article>}
           <div className="explore-shortcuts" role="group" aria-label="Quick canvas navigation"><span>EXPLORE</span><button onClick={() => { setShowSamples(false); resetView(); }}>Overview</button><button onClick={() => { setShowSamples(false); focusSlot(500501); }}>Center</button><button onClick={() => { setShowSamples(false); const spot = activityFeed[Math.floor(Math.random() * activityFeed.length)]; if (spot) goToPixel(undefined, spot.anchor_slot); else focusSlot(Math.floor(Math.random() * 1000000) + 1); }}>Random spot</button><span className="landmark-label">LANDMARKS</span>{LANDMARKS.map(item => <button key={item.slot} title={item.name} onClick={() => { setShowSamples(false); goToPixel(undefined, item.slot); }}>✦ #{String(item.slot).padStart(6, '0')}</button>)}<small>All spots · 50 EGP / 30 days</small></div>
@@ -932,8 +1006,9 @@ function App() {
               <button className="discovery-submit" type="submit" disabled={discoveryBusy}>{discoveryBusy ? 'Searching…' : 'Search canvas'}</button>
             </form>
             {discoveryMessage && <div className="discovery-message" role="status">{discoveryMessage}</div>}
-            {discoveryResults.length > 0 && <div className="discovery-results">{discoveryResults.map(spot => <button type="button" className="discovery-result" key={spot.anchor_slot} onClick={() => openPublishedSpot(spot)}><img src={spot.imageUrl} alt="" /><span><b>{spot.display_name}</b><small>Spot #{spot.anchor_slot.toLocaleString()} · {spot.tags || 'No tags'} · {new Date(spot.published_at).toLocaleDateString()}</small></span><i>↗</i></button>)}</div>}
+            {discoveryResults.length > 0 && <div className="discovery-results">{([...discoveryResults].sort((a, b) => Number(b.anchor_slot === gameData?.champion) - Number(a.anchor_slot === gameData?.champion))).map(spot => <button type="button" className="discovery-result" key={spot.anchor_slot} onClick={() => openPublishedSpot(spot)}><img src={spot.imageUrl} alt="" /><span><b>{spot.display_name}</b><small>Spot #{spot.anchor_slot.toLocaleString()} · {spot.tags || 'No tags'} · {new Date(spot.published_at).toLocaleDateString()}</small></span><i>↗</i></button>)}</div>}
             <div className="canvas-preview-row"><div className="canvas-preview-options" role="group" aria-label="Image preview style"><span>Preview</span><button type="button" className={previewStyle === 'default' ? 'active' : ''} aria-pressed={previewStyle === 'default'} onClick={() => setPreviewStyle('default')}>Default</button><button type="button" className={previewStyle === 'pixel' ? 'active' : ''} aria-pressed={previewStyle === 'pixel'} onClick={() => setPreviewStyle('pixel')}>Pixel mosaic</button><button type="button" className={previewStyle === 'collage' ? 'active' : ''} aria-pressed={previewStyle === 'collage'} onClick={() => setPreviewStyle('collage')}>Art collage</button></div><form className="pixel-finder" onSubmit={goToPixel}><label htmlFor="pixel-number">Go to pixel</label><input id="pixel-number" type="number" min="1" max="1000000" step="1" value={pixelSearch} onChange={event => setPixelSearch(event.target.value)} placeholder="Enter number" required /><button type="submit" disabled={searchingPixel}>{searchingPixel ? 'Finding…' : 'Go'}</button></form></div>
+            {(heatmap || territories || huntMode) && <div className="map-game-status" role="status">{heatmap && <span>● Weekly interaction heatmap · relative intensity</span>}{territories && <span>▦ Guild territories · colored by guild</span>}{huntMode && <span>✧ {huntBusy ? 'Checking pixel…' : 'Golden hunt mode: tap a pixel to search'}</span>}<button onClick={() => { setHeatmap(false); setTerritories(false); setHuntMode(false); }}>Clear overlays</button></div>}
             <div className="canvas-wrap" ref={wrapRef} onWheel={handleWheel} onPointerDown={mapPointerDown} onPointerMove={mapPointerMove} onPointerLeave={() => { if (!activePointers.current.size) { setHoveredSlot(null); setHoveredPoint(null); } }} onPointerUp={mapPointerUp} onPointerCancel={event => { activePointers.current.delete(event.pointerId); pinchState.current = null; drag.current = null; }}>
               <canvas ref={canvasRef} aria-label="Interactive map of one million numbered slots. Zoom in to select a slot." />
               {hoveredSlot && hoveredPoint && hoveredPublished && <div className="spot-hover-card" onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()} style={{ left: `${Math.max(8, Math.min(hoveredPoint.x - 12, view.current.width - 300))}px`, top: `${Math.min(Math.max(hoveredPoint.y + 16, 8), view.current.height - 250)}px` }}><img src={hoveredPublished.imageUrl} alt="" /><div><b>{hoveredPublished.display_name}</b><span>Spot #{Number(hoveredPublished.anchor_slot || hoveredPublished.slot_number).toLocaleString()} · {Number(hoveredPublished.spot_size) || 1}×{Number(hoveredPublished.spot_size) || 1}</span><p>{hoveredPublished.description?.trim() || 'A place on the Million Pixel canvas.'}</p>{hoveredPublished.website_url && <a href={hoveredPublished.website_url} target="_blank" rel="noreferrer">Visit link ↗</a>}<button className="hover-open" onClick={() => openPublishedSpot(hoveredPublished)}>Open spot ↗</button><small>{hoveredPublished.published_at ? `Published ${new Date(hoveredPublished.published_at).toLocaleDateString()}` : 'Published image'}</small></div></div>}
@@ -943,6 +1018,7 @@ function App() {
             </div>
             <div className="canvas-footer"><button className="text-button" onClick={() => setShowGuide(true)}>Quick guide</button><span>Pinch or scroll to zoom · Drag to move · Zoom in to select</span><button className="text-button" onClick={() => { const slot = Math.floor(Math.random() * MAP_SIZE * MAP_SIZE) + 1; zoomToSlot(slot); }}>Pick a spot for me ↗</button></div>
           </div>
+          <CommunityGames data={gameData} error={gameError} supabase={supabase} session={session} profile={profile} refresh={refreshGames} notify={notify} onFocus={(slot, zoom, open) => { setShowSamples(false); setBrowseView('map'); if (slot == null) resetView(); else if (open) goToPixel(undefined, slot); else focusSlot(slot, zoom); document.getElementById('canvas')?.scrollIntoView({ behavior: 'smooth' }); }} huntMode={huntMode} setHuntMode={setHuntMode} heatmap={heatmap} setHeatmap={setHeatmap} territories={territories} setTerritories={setTerritories} onSignIn={() => { setAuthMode('signin'); setAuthMessage('Sign in to join the canvas community.'); setDrawer('signin'); }} />
           <div className="discovery-grid">
             <article className="discovery-card"><div className="discovery-card-heading"><div><span className="eyebrow">Fresh on the canvas</span><h3>Live activity</h3></div><span className="activity-live"><i /> LIVE</span></div>
               {activityFeed.length ? <ul>{activityFeed.map(item => <li key={item.anchor_slot}><button type="button" onClick={() => goToPixel(undefined, item.anchor_slot)}><b>{item.display_name}</b>’s spot <strong>#{Number(item.anchor_slot).toLocaleString()}</strong> went live<small>{new Date(item.published_at).toLocaleString()}</small></button></li>)}</ul> : <p className="discovery-empty">Newly approved spots will appear here.</p>}
@@ -988,7 +1064,7 @@ function App() {
         {drawer === 'setup' && <><div className="eyebrow">Configuration</div><h2>Connect Supabase</h2><p className="drawer-lead">Follow the project README to create a Supabase project, apply the migration, set the two Vite environment variables, and deploy the admin-review Edge Function.</p></>}
         {drawer === 'signin' && <><div className="eyebrow">Welcome</div><h2>{authMode === 'signup' ? 'Create your account' : 'Sign in'}</h2><p className="drawer-lead">{authMode === 'signup' ? 'Create an account to claim a pixel and share your image.' : 'Sign in to claim a pixel, like images, or manage your submissions.'}</p><AuthForm email={email} setEmail={setEmail} password={password} setPassword={setPassword} mode={authMode} setMode={setAuthMode} onSubmit={signInWithPassword} onSignUp={signUp} onMagicLink={signIn} busy={busy} message={authMessage} /></>}
         {drawer === 'account' && <><div className="eyebrow">Your account</div><h2>My submissions</h2><p className="drawer-lead">Signed in as <strong>{session?.user.email}</strong></p><div className="referral-account-card"><span className="eyebrow">Your referral link</span><b>{profile?.referral_code || 'Generating your code…'}</b><small>Both of you earn 15% of a referred spot’s price in credits after it is approved.</small><button type="button" onClick={copyReferralLink} disabled={!profile?.referral_code}>Copy invite link</button><div>Credit balance <strong>{formatEGP(availableCredits * SPOT_PRICE_EGP)}</strong></div></div><div className="claim-list">{myClaims.length ? myClaims.map(claim => <div className="claim-row" key={claim.id}><b>Spot #{claim.slot_number.toLocaleString()} · {Number(claim.spot_size) || 1}×{Number(claim.spot_size) || 1}</b><span className={`status-pill ${claim.status}`}>{claim.status}</span><small>{claim.display_name} · {new Date(claim.created_at).toLocaleDateString()}</small>{claim.status === 'published' && <button className="text-button" onClick={() => downloadSpotBadge(claim, true)}>Download my spot badge · PNG ↗</button>}</div>) : <div className="queue-empty">No submissions yet. Choose an open pixel on the map.</div>}</div><button className="button button-outline button-wide" onClick={signOut}>Sign out</button></>}
-        {drawer === 'image' && selectedImage && <><div className="eyebrow">Published spot · #{Number(selectedImage.anchor_slot || selectedImage.slot_number).toLocaleString()}</div><h2>{selectedImage.display_name}</h2><div className="viewer-navigation" role="group" aria-label="Browse published images"><button className="button button-outline" disabled={viewerSpots.length < 2} onClick={() => browseImage(-1)} aria-label="Previous image">← Previous</button><span aria-live="polite">{Math.max(1, viewerIndex + 1)} / {viewerSpots.length}</span><button className="button button-outline" disabled={viewerSpots.length < 2} onClick={() => browseImage(1)} aria-label="Next image">Next →</button></div><div className="image-detail-photo swipe-photo" onTouchStart={event => { const touch = event.touches[0]; swipeStart.current = event.touches.length === 1 ? { x: touch.clientX, y: touch.clientY } : null; }} onTouchMove={event => { if (event.touches.length > 1) swipeStart.current = null; }} onTouchCancel={() => { swipeStart.current = null; }} onTouchEnd={event => { const start = swipeStart.current; swipeStart.current = null; const touch = event.changedTouches[0]; if (!start || !touch) return; const dx = touch.clientX - start.x, dy = touch.clientY - start.y; if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.4) browseImage(dx < 0 ? 1 : -1); }}><img src={selectedImage.imageUrl} alt={`Image published by ${selectedImage.display_name}`} onDoubleClick={toggleImageLike} title="Double-click to like" /></div><div className="spot-profile-meta">{landmarkName(selectedImage.anchor_slot || selectedImage.slot_number) && <span className="landmark-badge">✦ {landmarkName(selectedImage.anchor_slot || selectedImage.slot_number)}</span>}<span>{Number(selectedImage.spot_size) || 1}×{Number(selectedImage.spot_size) || 1} featured area</span><span>Published {selectedImage.published_at ? new Date(selectedImage.published_at).toLocaleDateString() : 'date unavailable'}</span></div>{selectedImage.website_url && <a className="spot-profile-link" href={selectedImage.website_url} target="_blank" rel="noreferrer">Visit website or social profile ↗</a>}<div className="image-story">{selectedImage.description?.trim() ? selectedImage.description : <span className="empty-story">No story was added for this image.</span>}</div><button className={`image-like-button ${imageLikes.liked ? 'liked' : ''}`} type="button" onClick={toggleImageLike} disabled={likeBusy} aria-pressed={imageLikes.liked}><span aria-hidden="true">{imageLikes.liked ? '♥' : '♡'}</span><b>{imageLikes.liked ? 'Liked' : 'Like'}</b><span className="like-count">{imageLikes.count.toLocaleString()}</span></button>{!session?.user && <p className="image-like-hint">Sign in to like this image.</p>}<div className="spot-share-actions"><button className="button button-outline" onClick={() => downloadSpotBadge(selectedImage, myClaims.some(claim => claim.status === 'published' && Number(claim.slot_number) === Number(selectedImage.anchor_slot || selectedImage.slot_number)))}>Download sharing card · PNG</button><button className="text-button" onClick={() => copySpotLink(selectedImage.anchor_slot || selectedImage.slot_number)}>Copy direct spot link ↗</button></div></>}
+        {drawer === 'image' && selectedImage && <><div className="eyebrow">Published spot · #{Number(selectedImage.anchor_slot || selectedImage.slot_number).toLocaleString()}</div><h2>{selectedImage.display_name}</h2><div className="achievement-chips">{spotPrestige(selectedImage.anchor_slot || selectedImage.slot_number) && <span>{spotPrestige(selectedImage.anchor_slot || selectedImage.slot_number)}</span>}{achievementLabels((gameData?.decorations || []).find(item => item.slot === Number(selectedImage.anchor_slot || selectedImage.slot_number))).map(label => <span key={label}>{label}</span>)}{Number(selectedImage.anchor_slot || selectedImage.slot_number) === gameData?.champion && <span>⚡ Battle champion · 24-hour border</span>}</div><div className="viewer-navigation" role="group" aria-label="Browse published images"><button className="button button-outline" disabled={viewerSpots.length < 2} onClick={() => browseImage(-1)} aria-label="Previous image">← Previous</button><span aria-live="polite">{Math.max(1, viewerIndex + 1)} / {viewerSpots.length}</span><button className="button button-outline" disabled={viewerSpots.length < 2} onClick={() => browseImage(1)} aria-label="Next image">Next →</button></div><div className="image-detail-photo swipe-photo" onTouchStart={event => { const touch = event.touches[0]; swipeStart.current = event.touches.length === 1 ? { x: touch.clientX, y: touch.clientY } : null; }} onTouchMove={event => { if (event.touches.length > 1) swipeStart.current = null; }} onTouchCancel={() => { swipeStart.current = null; }} onTouchEnd={event => { const start = swipeStart.current; swipeStart.current = null; const touch = event.changedTouches[0]; if (!start || !touch) return; const dx = touch.clientX - start.x, dy = touch.clientY - start.y; if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.4) browseImage(dx < 0 ? 1 : -1); }}><img src={selectedImage.imageUrl} alt={`Image published by ${selectedImage.display_name}`} onDoubleClick={toggleImageLike} title="Double-click to like" /></div><div className="spot-profile-meta">{landmarkName(selectedImage.anchor_slot || selectedImage.slot_number) && <span className="landmark-badge">✦ {landmarkName(selectedImage.anchor_slot || selectedImage.slot_number)}</span>}<span>{Number(selectedImage.spot_size) || 1}×{Number(selectedImage.spot_size) || 1} featured area</span><span>Published {selectedImage.published_at ? new Date(selectedImage.published_at).toLocaleDateString() : 'date unavailable'}</span></div>{selectedImage.website_url && <a className="spot-profile-link" href={selectedImage.website_url} target="_blank" rel="noreferrer">Visit website or social profile ↗</a>}<div className="image-story">{selectedImage.description?.trim() ? selectedImage.description : <span className="empty-story">No story was added for this image.</span>}</div><button className={`image-like-button ${imageLikes.liked ? 'liked' : ''}`} type="button" onClick={toggleImageLike} disabled={likeBusy} aria-pressed={imageLikes.liked}><span aria-hidden="true">{imageLikes.liked ? '♥' : '♡'}</span><b>{imageLikes.liked ? 'Liked' : 'Like'}</b><span className="like-count">{imageLikes.count.toLocaleString()}</span></button>{!session?.user && <p className="image-like-hint">Sign in to like this image.</p>}<div className="spot-share-actions"><button className="button button-outline" onClick={() => downloadSpotBadge(selectedImage, myClaims.some(claim => claim.status === 'published' && Number(claim.slot_number) === Number(selectedImage.anchor_slot || selectedImage.slot_number)))}>Download sharing card · PNG</button><button className="text-button" onClick={() => copySpotLink(selectedImage.anchor_slot || selectedImage.slot_number)}>Copy direct spot link ↗</button></div></>}
         {drawer === 'admin' && <><div className="eyebrow">Protected review queue</div><h2>Review submissions</h2><p className="drawer-lead">Only accounts granted admin access can review proof and publish images.</p><div className="queue-heading">Pending review <small>{pendingClaims.length} requests</small></div>{pendingClaims.length ? pendingClaims.map(claim => <article className="submission-card" key={claim.id}><div className="submission-card-head"><strong>Pixel #{claim.slot_number.toLocaleString()} · {claim.display_name}</strong><span className="status-pill">Pending</span></div><div className="submission-meta">{claim.contact}<br />Submitted {new Date(claim.created_at).toLocaleString()}<br />Amount due: {claim.payment_amount_egp != null ? formatEGP(claim.payment_amount_egp) : `${Number(claim.amount_due ?? 1).toFixed(2)} (legacy claim)`}{claim.payment_method && <><br />Method: {PAYMENT_METHODS[claim.payment_method] || claim.payment_method}</>}{claim.payment_reference && <><br />Transaction reference: {claim.payment_reference}</>}</div>{claim.description?.trim() && <p className="submission-story">{claim.description}</p>}<div className="submission-preview">{claim.artworkUrl && <img src={claim.artworkUrl} alt="Submitted artwork" />}{claim.proofUrl ? <a href={claim.proofUrl} target="_blank" rel="noreferrer">Open private payment proof ↗</a> : <span className="submission-meta">Paid fully with account credits</span>}</div><div className="queue-actions"><button disabled={busy} onClick={() => reviewClaim(claim.id, 'approve')}>Approve & publish</button><button className="reject-button" disabled={busy} onClick={() => reviewClaim(claim.id, 'reject')}>Reject</button></div></article>) : <div className="queue-empty">No pending submissions.</div>}</>}
       </aside>}
       {replayOpen && <div className="replay-overlay"><aside className="replay-modal"><button className="close-button" onClick={() => setReplayOpen(false)} aria-label="Close replay">×</button><div className="eyebrow">Share the progress</div><h2>This week on the canvas</h2><p className="drawer-lead">A vertical 9:16 replay of spots published in the last seven days.</p><canvas className="replay-canvas" ref={replayCanvasRef} /><div className="replay-progress"><i style={{ width: `${replayProgress * 100}%` }} /></div><p className="replay-status">{replayMessage}</p><button type="button" className="button button-outline button-wide" onClick={() => { setReplayOpen(false); createWeeklyReplay(); }}>Make another replay</button></aside></div>}
