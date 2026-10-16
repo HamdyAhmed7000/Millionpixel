@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { hasSupabaseConfig, supabase } from './supabase.js';
 import CommunityGames, { spotPrestige, achievementLabels } from './CommunityGames.jsx';
+import CanvasExpeditions, { DISTRICTS, districtForSlot, randomOpenSlot } from './CanvasExpeditions.jsx';
 
 const MAP_SIZE = 1000;
 const LANDMARKS = [{ slot: 1, name: 'The beginning' }, { slot: 499500, name: 'Heart of the canvas' }, { slot: 500501, name: 'Center crossroads' }, { slot: 1000000, name: 'The final pixel' }, { slot: 777778, name: 'Lucky 777' }];
@@ -45,6 +46,17 @@ function App() {
   const drag = useRef(null);
   const [activityNow, setActivityNow] = useState(Date.now());
   const [gameData, setGameData] = useState(null);
+  const [expeditionData, setExpeditionData] = useState(null);
+  const [expeditionError, setExpeditionError] = useState('');
+  const [districtFog, setDistrictFog] = useState(true);
+  const [puzzleMode, setPuzzleMode] = useState(false);
+  const [puzzleBusy, setPuzzleBusy] = useState(false);
+  const refreshExpeditions = useCallback(async () => {
+    if (!supabase) return;
+    try { const { data, error } = await supabase.rpc('get_canvas_expeditions'); if (error) { setExpeditionError('Season and quest data is temporarily unavailable.'); return; } setExpeditionData(data); setExpeditionError(''); }
+    catch { setExpeditionError('Season and quest data is temporarily unavailable.'); }
+  }, []);
+
   const [gameError, setGameError] = useState('');
   const [heatmap, setHeatmap] = useState(false);
   const [territories, setTerritories] = useState(false);
@@ -82,6 +94,10 @@ function App() {
   }, [showGuide]);
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
+  useEffect(() => {
+    setExpeditionData(null); refreshExpeditions();
+    const timer = setInterval(refreshExpeditions, 30000); return () => clearInterval(timer);
+  }, [session?.user?.id, refreshExpeditions]);
   useEffect(() => {
     setGameData(null); refreshGames();
     const timer = setInterval(refreshGames, 30000);
@@ -185,7 +201,7 @@ function App() {
     if (!Number.isInteger(savedSlot) || savedSlot < 1 || savedSlot > MAP_SIZE * MAP_SIZE) return false;
     claimResumeRef.current = true;
     setSelectedSlot(savedSlot);
-    setSelectedSpotSize([1, 2, 4].includes(savedSize) ? savedSize : 1);
+    setSelectedSpotSize([1, 2, 3, 4].includes(savedSize) ? savedSize : 1);
     setFormOpen(true);
     setDrawer('');
     window.localStorage.removeItem(PENDING_CLAIM_KEY);
@@ -316,6 +332,8 @@ function App() {
     let visitorId = window.localStorage.getItem('million-pixel-visitor-id');
     if (!visitorId) { visitorId = crypto.randomUUID(); window.localStorage.setItem('million-pixel-visitor-id', visitorId); }
     await supabase.rpc('record_canvas_interaction', { p_slot: slotNumber, p_visitor: visitorId, p_kind: 'click' });
+    const { data: authState } = await supabase.auth.getSession();
+    if (authState?.session) await supabase.rpc('record_canvas_exploration', { p_slot: slotNumber });
     const { error } = await supabase.rpc('record_public_spot_view', { p_slot_number: slotNumber, p_visitor_id: visitorId });
     if (error) console.warn('Spot view could not be recorded. Apply migration 0004 to enable popularity stats.', error);
   }, []);
@@ -380,6 +398,16 @@ function App() {
       for (let x = Math.ceil(bounds.minX / (step * 4)) * step * 4; x <= bounds.maxX; x += step * 4) ctx.fillText(`X ${x}`, toScreen(x, 0).x + 4, Math.max(14, topLeft.y + 14));
     }
 
+
+    if (districtFog) {
+      for (const district of DISTRICTS) {
+        if ((expeditionData?.approved_placements || 0) >= district.required) continue;
+        const p = toScreen(district.x, district.y), size = 500 * scale;
+        ctx.fillStyle = 'rgba(5,10,14,.88)'; ctx.fillRect(p.x, p.y, size, size);
+        ctx.strokeStyle = '#71818a'; ctx.lineWidth = 1; ctx.strokeRect(p.x, p.y, size, size);
+        if (size > 150) { ctx.save(); ctx.textAlign = 'center'; ctx.fillStyle = '#acbbc2'; ctx.font = 'bold 14px sans-serif'; ctx.fillText(`District ${district.zone} · Locked`, p.x + size / 2, p.y + size / 2); ctx.font = '11px sans-serif'; ctx.fillText(`${district.required.toLocaleString()} approved placements`, p.x + size / 2, p.y + size / 2 + 21); ctx.restore(); }
+      }
+    }
     if (heatmap) {
       const peak = Math.max(1, ...(gameData?.heatmap || []).map(item => Number(item.interactions)));
       for (const item of gameData?.heatmap || []) {
@@ -453,6 +481,11 @@ function App() {
         ctx.stroke();
       }
     }
+
+    if (puzzleMode && expeditionData?.riddle?.slot) {
+      const { x, y } = slotCoordinates(expeditionData.riddle.slot), p = toScreen(x + .5, y + .5);
+      ctx.save(); ctx.fillStyle = '#f0db9a'; ctx.shadowColor = '#e5c65c'; ctx.shadowBlur = 10; ctx.font = `${Math.max(14, Math.min(28, scale * .8))}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('?', p.x, p.y); ctx.restore();
+    }
     if (gameData?.champion) {
       const { x, y } = slotCoordinates(gameData.champion); const p = toScreen(x, y); ctx.save(); ctx.strokeStyle = '#87fff0'; ctx.shadowColor = '#42ffdd'; ctx.shadowBlur = 16; ctx.lineWidth = 3;
       ctx.strokeRect(p.x - 2, p.y - 2, Math.max(8, scale + 4), Math.max(8, scale + 4)); ctx.restore();
@@ -467,7 +500,7 @@ function App() {
       const { x, y } = slotCoordinates(selectedSlot); const p = toScreen(x, y);
       ctx.strokeStyle = '#c4f06b'; ctx.lineWidth = 2; ctx.strokeRect(p.x + 1, p.y + 1, Math.max(2, scale * selectedSpotSize - 2), Math.max(2, scale * selectedSpotSize - 2));
     }
-  }, [published, selectedSlot, selectedSpotSize, hoveredSlot, previewStyle, visibleBounds, heatmap, territories, gameData]);
+  }, [published, selectedSlot, selectedSpotSize, hoveredSlot, previewStyle, visibleBounds, heatmap, territories, gameData, districtFog, expeditionData, puzzleMode]);
 
   const updateVisible = useCallback(() => {
     render();
@@ -698,13 +731,20 @@ function App() {
 
   const resetView = () => { const v = view.current; animateView({ scale: v.baseScale, panX: 0, panY: 0 }, 300); setSelectedSlot(null); };
 
-  const requestPixelClaim = slot => {
+  const requestPixelClaim = (slot, size = 1) => {
+    if (!Number.isInteger(slot) || slot < 1 || slot > 1000000 || ![1,3].includes(size)) { notify('Choose a valid spot.'); return; }
+    const point = slotCoordinates(slot);
+    if (point.x + size > 1000 || point.y + size > 1000) { notify('This image needs more room at the canvas edge.'); return; }
+    for (let dy = 0; dy < size; dy++) for (let dx = 0; dx < size; dx++) {
+      const district = districtForSlot(slot + dy * 1000 + dx);
+      if ((expeditionData?.approved_placements || 0) < district.required) { notify(`District ${district.zone} unlocks at ${district.required.toLocaleString()} approved tile placements. Choose an open district.`); return; }
+    }
     setSelectedSlot(slot);
-    setSelectedSpotSize(1);
+    setSelectedSpotSize(size);
     if (!session?.user) {
       if (!supabase) { setDrawer('setup'); return; }
       claimResumeRef.current = false;
-      window.localStorage.setItem(PENDING_CLAIM_KEY, JSON.stringify({ slot, size: 1 }));
+      window.localStorage.setItem(PENDING_CLAIM_KEY, JSON.stringify({ slot, size }));
       setFormOpen(false); setAuthMode('signin'); setAuthMessage(''); setDrawer('signin');
       return;
     }
@@ -720,12 +760,12 @@ function App() {
 
   const focusSlot = (slot, zoom = 30) => {
     setBrowseView('map');
-    const v = view.current; const { x, y } = slotCoordinates(slot); const scale = Math.max(v.scale, v.baseScale * zoom);
+    const v = view.current; const { x, y } = slotCoordinates(slot); const scale = v.baseScale * Math.min(150, Math.max(1, zoom));
     animateView({ scale, panX: -(x + .5 - MAP_SIZE / 2) * scale, panY: -(y + .5 - MAP_SIZE / 2) * scale });
     setSelectedSlot(slot); updateVisible();
   };
 
-  const goToPixel = async (event, targetSlot) => {
+  const goToPixel = async (event, targetSlot) => { setPuzzleMode(false); setHuntMode(false);
     event?.preventDefault?.();
     const slot = Number(targetSlot ?? pixelSearch);
     if (!Number.isInteger(slot) || slot < 1 || slot > MAP_SIZE * MAP_SIZE) {
@@ -766,6 +806,14 @@ function App() {
     setHuntBusy(true);
     try { const { data, error } = await supabase.rpc('find_canvas_golden_pixel', { p_slot: slot }); if (error) notify(error.message); else if (data) { notify('Golden pixel found! Your Golden Explorer badge is saved.'); refreshGames(); } else notify(`Spot #${slot.toLocaleString()}: keep looking inside the clue area.`); }
     catch { notify('Could not check this pixel. Please try again.'); } finally { setHuntBusy(false); }
+  };
+
+  const visitRiddlePixel = async slot => {
+    if (puzzleBusy) return;
+    if (!session) { setAuthMode('signin'); setAuthMessage('Sign in to save your puzzle progress.'); setDrawer('signin'); return; }
+    setPuzzleBusy(true);
+    try { const { data, error } = await supabase.rpc('visit_canvas_riddle', { p_slot: slot }); if (error) notify(error.message); else if (data) { notify('Clue discovered! Return to the puzzle trail to answer.'); refreshExpeditions(); setPuzzleMode(false); document.getElementById('canvas-expeditions')?.scrollIntoView({ behavior: 'smooth' }); } else notify('Look for the question mark on your current clue pixel.'); }
+    catch { notify('Could not save this visit. Please try again.'); } finally { setPuzzleBusy(false); }
   };
   const mapPointerDown = event => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -824,6 +872,7 @@ function App() {
       if (x >= 0 && y >= 0 && x < MAP_SIZE && y < MAP_SIZE) {
         const slot = Math.floor(y) * MAP_SIZE + Math.floor(x) + 1;
         const publishedImage = published.find(item => Number(item.slot_number) === slot);
+        if (puzzleMode) { if (view.current.scale < view.current.baseScale * 40) { notify('Zoom in further to read the clue marker.'); return; } visitRiddlePixel(slot); return; }
         if (huntMode) { if (view.current.scale < view.current.baseScale * 40) { notify('Zoom in further to search for a golden pixel.'); return; } searchGoldenPixel(slot); return; }
         if (publishedImage) openPublishedSpot(publishedImage);
         else if (v.scale < v.baseScale * 10) notify('Zoom in to choose an individual pixel.');
@@ -909,7 +958,7 @@ function App() {
   const hoveredPublished = hoveredSlot ? published.find(item => Number(item.slot_number) === hoveredSlot) : null;
 
   const claimAvailableSpot = () => {
-    let slot = Math.floor(Math.random() * MAP_SIZE * MAP_SIZE) + 1;
+    let slot = randomOpenSlot(expeditionData?.approved_placements || 0);
     const occupied = new Set(published.map(item => Number(item.slot_number)));
     while (occupied.has(slot) && occupied.size < MAP_SIZE * MAP_SIZE) slot = slot % (MAP_SIZE * MAP_SIZE) + 1;
     setShowSamples(false);
@@ -982,8 +1031,10 @@ function App() {
             </> : <button className="button button-small button-outline" onClick={() => { setAuthMode('signin'); setAuthMessage(''); setDrawer('signin'); }}>Sign in</button>}
           </div>
         </div>
-        <section className="intro nav-hero"><div className="nav-hero-copy"><div className="eyebrow">A tiny space on a big canvas</div><h1>Make a little<br /><span>space yours.</span></h1></div><p>Choose a pixel, share your image, and leave your mark on a living canvas.</p><div className="intro-actions"><button className="button button-primary claim-primary" onClick={claimAvailableSpot}>Claim your spot · 50 EGP <span>↗</span></button><span className="intro-hint review-promise">✓ Every submission is reviewed before it goes live.<br />One spot · 30 days · receipt checked privately</span><button className="text-button" onClick={() => document.getElementById('how-it-works')?.scrollIntoView({ behavior: 'smooth' })}>How it works ↓</button></div></section>
+        <nav className="quest-navigation" aria-label="Canvas activities"><a href="#canvas">Images</a><a href="#canvas-expeditions">Seasons & quests</a><a href="#canvas-games">Guilds & battles</a></nav><section className="intro nav-hero"><div className="nav-hero-copy"><div className="eyebrow">A tiny space on a big canvas</div><h1>Make a little<br /><span>space yours.</span></h1></div><p>Choose a pixel, share your image, and leave your mark on a living canvas.</p><div className="intro-actions"><button className="button button-primary claim-primary" onClick={claimAvailableSpot}>Claim your spot · 50 EGP <span>↗</span></button><span className="intro-hint review-promise">✓ Every submission is reviewed before it goes live.<br />One spot · 30 days · receipt checked privately</span><button className="text-button" onClick={() => document.getElementById('how-it-works')?.scrollIntoView({ behavior: 'smooth' })}>How it works ↓</button></div></section>
         <section className="activity-ticker" aria-label="Recently published spots"><span className="ticker-title"><i className="live-dot" /> RECENTLY LIVE</span><div className="ticker-items">{activityFeed.length ? activityFeed.map(item => <button key={item.anchor_slot} onClick={() => { setShowSamples(false); goToPixel(undefined, item.anchor_slot); }}><b>#{Number(item.anchor_slot).toLocaleString()}</b> by {item.display_name}<time dateTime={item.published_at}>{relativeTime(item.published_at, activityNow)}</time></button>) : <span>Approved images will appear here as the canvas grows.</span>}</div><small>Approved submissions</small></section>
+        {expeditionData?.hall?.[0]?.winner && <div className="season-promotion"><b>🏆 Hall of Fame · District {expeditionData.hall[0].winner}</b><span>Winner of the {expeditionData.hall[0].season.slice(0,7)} canvas season</span><a href="#canvas-expeditions">Explore the season archive ↗</a></div>}
+        {expeditionData?.riddle_winner && <div className="season-promotion"><b>✧ First puzzle solver: {expeditionData.riddle_winner.name}</b>{expeditionData.riddle_winner.slot && <button className="text-button" onClick={() => goToPixel(undefined, expeditionData.riddle_winner.slot)}>See their spot ↗</button>}</div>}
         {featuredChallenge && <div className="featured-challenge"><div><span className="eyebrow">Community vote · {featuredChallenge.title}</span><b>Monthly spotlight</b><small>Spot #{Number(featuredChallenge.slot_number).toLocaleString()} · {Number(featuredChallenge.vote_count).toLocaleString()} votes</small></div><img src={supabase.storage.from('published-images').getPublicUrl(featuredChallenge.image_path).data.publicUrl} alt={`Top voted spot in ${featuredChallenge.title}`} /><button onClick={() => document.getElementById('community-challenges')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>See the challenge ↘</button></div>}
       </header>
 
@@ -1008,17 +1059,18 @@ function App() {
             {discoveryMessage && <div className="discovery-message" role="status">{discoveryMessage}</div>}
             {discoveryResults.length > 0 && <div className="discovery-results">{([...discoveryResults].sort((a, b) => Number(b.anchor_slot === gameData?.champion) - Number(a.anchor_slot === gameData?.champion))).map(spot => <button type="button" className="discovery-result" key={spot.anchor_slot} onClick={() => openPublishedSpot(spot)}><img src={spot.imageUrl} alt="" /><span><b>{spot.display_name}</b><small>Spot #{spot.anchor_slot.toLocaleString()} · {spot.tags || 'No tags'} · {new Date(spot.published_at).toLocaleDateString()}</small></span><i>↗</i></button>)}</div>}
             <div className="canvas-preview-row"><div className="canvas-preview-options" role="group" aria-label="Image preview style"><span>Preview</span><button type="button" className={previewStyle === 'default' ? 'active' : ''} aria-pressed={previewStyle === 'default'} onClick={() => setPreviewStyle('default')}>Default</button><button type="button" className={previewStyle === 'pixel' ? 'active' : ''} aria-pressed={previewStyle === 'pixel'} onClick={() => setPreviewStyle('pixel')}>Pixel mosaic</button><button type="button" className={previewStyle === 'collage' ? 'active' : ''} aria-pressed={previewStyle === 'collage'} onClick={() => setPreviewStyle('collage')}>Art collage</button></div><form className="pixel-finder" onSubmit={goToPixel}><label htmlFor="pixel-number">Go to pixel</label><input id="pixel-number" type="number" min="1" max="1000000" step="1" value={pixelSearch} onChange={event => setPixelSearch(event.target.value)} placeholder="Enter number" required /><button type="submit" disabled={searchingPixel}>{searchingPixel ? 'Finding…' : 'Go'}</button></form></div>
-            {(heatmap || territories || huntMode) && <div className="map-game-status" role="status">{heatmap && <span>● Weekly interaction heatmap · relative intensity</span>}{territories && <span>▦ Guild territories · colored by guild</span>}{huntMode && <span>✧ {huntBusy ? 'Checking pixel…' : 'Golden hunt mode: tap a pixel to search'}</span>}<button onClick={() => { setHeatmap(false); setTerritories(false); setHuntMode(false); }}>Clear overlays</button></div>}
+            {(heatmap || territories || huntMode || puzzleMode) && <div className="map-game-status" role="status">{heatmap && <span>● Weekly interaction heatmap · relative intensity</span>}{territories && <span>▦ Guild territories · colored by guild</span>}{puzzleMode && <span>? Puzzle trail · tap your clue marker</span>}{huntMode && <span>✧ {huntBusy ? 'Checking pixel…' : 'Golden hunt mode: tap a pixel to search'}</span>}<button onClick={() => { setHeatmap(false); setTerritories(false); setHuntMode(false); setPuzzleMode(false); }}>Clear overlays</button></div>}
             <div className="canvas-wrap" ref={wrapRef} onWheel={handleWheel} onPointerDown={mapPointerDown} onPointerMove={mapPointerMove} onPointerLeave={() => { if (!activePointers.current.size) { setHoveredSlot(null); setHoveredPoint(null); } }} onPointerUp={mapPointerUp} onPointerCancel={event => { activePointers.current.delete(event.pointerId); pinchState.current = null; drag.current = null; }}>
               <canvas ref={canvasRef} aria-label="Interactive map of one million numbered slots. Zoom in to select a slot." />
               {hoveredSlot && hoveredPoint && hoveredPublished && <div className="spot-hover-card" onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()} style={{ left: `${Math.max(8, Math.min(hoveredPoint.x - 12, view.current.width - 300))}px`, top: `${Math.min(Math.max(hoveredPoint.y + 16, 8), view.current.height - 250)}px` }}><img src={hoveredPublished.imageUrl} alt="" /><div><b>{hoveredPublished.display_name}</b><span>Spot #{Number(hoveredPublished.anchor_slot || hoveredPublished.slot_number).toLocaleString()} · {Number(hoveredPublished.spot_size) || 1}×{Number(hoveredPublished.spot_size) || 1}</span><p>{hoveredPublished.description?.trim() || 'A place on the Million Pixel canvas.'}</p>{hoveredPublished.website_url && <a href={hoveredPublished.website_url} target="_blank" rel="noreferrer">Visit link ↗</a>}<button className="hover-open" onClick={() => openPublishedSpot(hoveredPublished)}>Open spot ↗</button><small>{hoveredPublished.published_at ? `Published ${new Date(hoveredPublished.published_at).toLocaleDateString()}` : 'Published image'}</small></div></div>}
-              {hoveredSlot && hoveredPoint && !hoveredPublished && <div className="slot-hover-label" style={{ left: `${Math.min(hoveredPoint.x + 12, view.current.width - 150)}px`, top: `${Math.max(hoveredPoint.y - 34, 8)}px` }}><b>Pixel #{hoveredSlot.toLocaleString()}</b><span>{landmarkName(hoveredSlot) ? `✦ ${landmarkName(hoveredSlot)} · 50 EGP` : 'Available · click to choose'}</span></div>}
+              {hoveredSlot && hoveredPoint && !hoveredPublished && <div className="slot-hover-label" style={{ left: `${Math.min(hoveredPoint.x + 12, view.current.width - 150)}px`, top: `${Math.max(hoveredPoint.y - 34, 8)}px` }}><b>Pixel #{hoveredSlot.toLocaleString()}</b><span>{landmarkName(hoveredSlot) ? `✦ ${landmarkName(hoveredSlot)} · 50 EGP` : ((expeditionData?.approved_placements || 0) < districtForSlot(hoveredSlot).required ? `District ${districtForSlot(hoveredSlot).zone} · Locked` : 'Available · click to choose')}</span></div>}
               {currentScale < 1.3 && showSamples && usedSlotCount != null && usedSlotCount < 100 && <div className="sample-gallery" onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()} onWheel={event => event.stopPropagation()}><div className="sample-gallery-head"><div><span className="eyebrow">IMAGINE WHAT WE CAN MAKE</span><h3>A little inspiration. A million possibilities.</h3></div><button onClick={() => setShowSamples(false)} aria-label="Close sample gallery and explore real canvas">×</button></div><div className="sample-art-grid">{Array.from({length: 8}, (_, index) => <SampleArt key={index} index={index} />)}</div><div className="sample-gallery-foot"><p><b>Sample artwork</b> · Illustrations only. These are not purchases or reserved spots.</p><button className="text-button" onClick={() => setShowSamples(false)}>Explore the real canvas ↗</button></div></div>}
               {showGuide && <div className="claim-guide" role="status" onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}><span className="guide-square">＋</span><span className="guide-arrow">→</span><div><b>Choose a square. Share your story.</b><small>Click an available pixel → sign in → upload your image.</small></div><button onClick={() => setShowGuide(false)} aria-label="Dismiss quick guide">×</button></div>}
             </div>
-            <div className="canvas-footer"><button className="text-button" onClick={() => setShowGuide(true)}>Quick guide</button><span>Pinch or scroll to zoom · Drag to move · Zoom in to select</span><button className="text-button" onClick={() => { const slot = Math.floor(Math.random() * MAP_SIZE * MAP_SIZE) + 1; zoomToSlot(slot); }}>Pick a spot for me ↗</button></div>
+            <div className="canvas-footer"><button className="text-button" onClick={() => setShowGuide(true)}>Quick guide</button><span>Pinch or scroll to zoom · Drag to move · Zoom in to select</span><button className="text-button" onClick={() => { const slot = randomOpenSlot(expeditionData?.approved_placements || 0); zoomToSlot(slot); }}>Pick a spot for me ↗</button></div>
           </div>
-          <CommunityGames data={gameData} error={gameError} supabase={supabase} session={session} profile={profile} refresh={refreshGames} notify={notify} onFocus={(slot, zoom, open) => { setShowSamples(false); setBrowseView('map'); if (slot == null) resetView(); else if (open) goToPixel(undefined, slot); else focusSlot(slot, zoom); document.getElementById('canvas')?.scrollIntoView({ behavior: 'smooth' }); }} huntMode={huntMode} setHuntMode={setHuntMode} heatmap={heatmap} setHeatmap={setHeatmap} territories={territories} setTerritories={setTerritories} onSignIn={() => { setAuthMode('signin'); setAuthMessage('Sign in to join the canvas community.'); setDrawer('signin'); }} />
+          <CanvasExpeditions data={expeditionData} error={expeditionError} refresh={refreshExpeditions} supabase={supabase} session={session} notify={notify} onSignIn={() => { setAuthMode('signin'); setAuthMessage('Sign in to save your quest progress.'); setDrawer('signin'); }} onFocus={(slot, zoom = 30, mode) => { setPuzzleMode(mode === 'riddle'); setShowSamples(false); setHuntMode(false); setBrowseView('map'); if (slot == null) resetView(); else focusSlot(slot, zoom); document.getElementById('canvas')?.scrollIntoView({ behavior: 'smooth' }); }} fog={districtFog} setFog={setDistrictFog} puzzleMode={puzzleMode} setPuzzleMode={setPuzzleMode} onMosaicClaim={(file, slot) => { if (!Number.isInteger(slot) || slot < 1 || slot > 1000000) { notify('Enter a valid top-left spot number.'); return; } setPuzzleMode(false); setHuntMode(false); setForm(current => ({ ...current, artwork: file })); setBrowseView('map'); setShowSamples(false); focusSlot(slot, 45); requestPixelClaim(slot, 3); }} />
+          <CommunityGames data={gameData} error={gameError} supabase={supabase} session={session} profile={profile} refresh={refreshGames} notify={notify} onFocus={(slot, zoom, open) => { setPuzzleMode(false); setShowSamples(false); setBrowseView('map'); if (slot == null) resetView(); else if (open) goToPixel(undefined, slot); else focusSlot(slot, zoom); document.getElementById('canvas')?.scrollIntoView({ behavior: 'smooth' }); }} huntMode={huntMode} setHuntMode={setHuntMode} heatmap={heatmap} setHeatmap={setHeatmap} territories={territories} setTerritories={setTerritories} onSignIn={() => { setAuthMode('signin'); setAuthMessage('Sign in to join the canvas community.'); setDrawer('signin'); }} />
           <div className="discovery-grid">
             <article className="discovery-card"><div className="discovery-card-heading"><div><span className="eyebrow">Fresh on the canvas</span><h3>Live activity</h3></div><span className="activity-live"><i /> LIVE</span></div>
               {activityFeed.length ? <ul>{activityFeed.map(item => <li key={item.anchor_slot}><button type="button" onClick={() => goToPixel(undefined, item.anchor_slot)}><b>{item.display_name}</b>’s spot <strong>#{Number(item.anchor_slot).toLocaleString()}</strong> went live<small>{new Date(item.published_at).toLocaleString()}</small></button></li>)}</ul> : <p className="discovery-empty">Newly approved spots will appear here.</p>}
@@ -1050,7 +1102,7 @@ function App() {
           <label className="field-label">Website or social link <span>Optional</span><input type="url" maxLength="300" value={form.websiteUrl} onChange={e => setForm({ ...form, websiteUrl: e.target.value })} placeholder="https://your-site.com" /></label>
           <label className="field-label">Tags <span>Optional · separate with commas</span><input type="text" maxLength="160" value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })} placeholder="art, photography, gaming" /></label>
           <label className="field-label">Referral code <span>Optional · shared by a friend</span><input type="text" maxLength="32" value={form.referralCode} onChange={e => setForm({ ...form, referralCode: e.target.value.toUpperCase() })} placeholder="MP-XXXXXXXXXXXX" /></label>
-          <label className="field-label">Your image <span>PNG, JPG, GIF, WebP · 3 MB max</span><input type="file" accept="image/png,image/jpeg,image/gif,image/webp" required onChange={e => setForm({ ...form, artwork: e.target.files?.[0] || null })} /></label>
+          <label className="field-label">Your image <span>{form.artwork ? `Selected: ${form.artwork.name}` : 'PNG, JPG, GIF, WebP · 3 MB max'}</span><input type="file" accept="image/png,image/jpeg,image/gif,image/webp" required={!form.artwork} onChange={e => setForm({ ...form, artwork: e.target.files?.[0] || null })} /></label>
           {availableCredits > 0 && <label className="check-row credit-toggle"><input type="checkbox" checked={useCredits} onChange={event => setUseCredits(event.target.checked)} /><span>Use available credits ({formatEGP(availableCredits * SPOT_PRICE_EGP)})</span></label>}
           <div className="payment-box"><div><span>Amount due · 30 days</span><b>{formatEGP(claimAmountDue * SPOT_PRICE_EGP)}</b></div><small>{formatEGP(SPOT_PRICE_EGP)} per spot. {claimAmountDue === 0 ? 'Credits cover this spot; no transfer or receipt is needed.' : 'Account credits are deducted from the amount shown.'} Referral rewards are 15% in account credits after approval.</small></div>
           {claimAmountDue > 0 && <EgyptPayment form={form} setForm={setForm} amount={claimAmountDue * SPOT_PRICE_EGP} slot={selectedSlot} notify={notify} />}
