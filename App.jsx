@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { hasSupabaseConfig, supabase } from './lib/supabase.js';
+import { hasSupabaseConfig, supabase } from './supabase.js';
 
 const MAP_SIZE = 1000;
 const MAX_FILE_BYTES = 3 * 1024 * 1024;
