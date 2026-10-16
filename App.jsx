@@ -2,6 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { hasSupabaseConfig, supabase } from './supabase.js';
 
 const MAP_SIZE = 1000;
+const LANDMARKS = [{ slot: 1, name: 'The beginning' }, { slot: 499500, name: 'Heart of the canvas' }, { slot: 500501, name: 'Center crossroads' }, { slot: 1000000, name: 'The final pixel' }];
+function landmarkName(slot) { return LANDMARKS.find(item => item.slot === Number(slot))?.name; }
+function relativeTime(date, now) {
+  const minutes = Math.max(0, Math.floor((now - new Date(date).getTime()) / 60000));
+  return minutes < 1 ? 'just now' : minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1440)}d ago`;
+}
 const MAX_FILE_BYTES = 3 * 1024 * 1024;
 const SPOT_PRICE_EGP = 50;
 const PAYMENT_NUMBER = '01024227390';
@@ -36,6 +42,9 @@ function App() {
   const mosaicDirty = useRef(true);
   const view = useRef({ width: 0, height: 0, baseScale: 0, scale: 0, panX: 0, panY: 0 });
   const drag = useRef(null);
+  const [activityNow, setActivityNow] = useState(Date.now());
+  const sharedSpotOpened = useRef(false);
+  useEffect(() => { const timer = setInterval(() => setActivityNow(Date.now()), 60000); return () => clearInterval(timer); }, []);
   const [showSamples, setShowSamples] = useState(true);
   const [showGuide, setShowGuide] = useState(false);
   useEffect(() => {
@@ -358,6 +367,12 @@ function App() {
       ctx.font = `${Math.min(18, Math.max(10, scale * .58))}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('✦', p.x + scale / 2, p.y + scale / 2); ctx.restore();
     }
+    for (const landmark of LANDMARKS) {
+      const { x, y } = slotCoordinates(landmark.slot); const p = toScreen(x + .5, y + .5);
+      if (p.x < 0 || p.y < 0 || p.x > width || p.y > height) continue;
+      ctx.save(); ctx.strokeStyle = '#f4c776'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(5, Math.min(12, scale / 2)), 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+    }
     if (selectedSlot) {
       const { x, y } = slotCoordinates(selectedSlot); const p = toScreen(x, y);
       ctx.strokeStyle = '#c4f06b'; ctx.lineWidth = 2; ctx.strokeRect(p.x + 1, p.y + 1, Math.max(2, scale * selectedSpotSize - 2), Math.max(2, scale * selectedSpotSize - 2));
@@ -386,7 +401,7 @@ function App() {
     let ignore = false;
     const refreshActivity = async () => {
       const { data, error } = await supabase.from('published_slots')
-        .select('slot_number,anchor_slot,display_name,published_at')
+        .select('slot_number,anchor_slot,display_name,published_at,image_path,description,website_url')
         .gt('expires_at', new Date().toISOString()).order('published_at', { ascending: false }).limit(80);
       if (error || ignore) return;
       const unique = new Map();
@@ -398,7 +413,7 @@ function App() {
     };
     refreshActivity(); loadDiscovery(); loadChallenges();
     const channel = supabase.channel('million-pixel-public-activity')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'published_slots' }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'published_slots' }, () => {
         refreshActivity(); loadDiscovery(); refreshUsedSlotCount(); updateVisibleRef.current?.();
       }).subscribe();
     const timer = window.setInterval(() => { refreshActivity(); loadDiscovery(); loadChallenges(); }, 45000);
@@ -668,6 +683,7 @@ function App() {
     event.currentTarget.setPointerCapture(event.pointerId);
   };
   const mapPointerMove = event => {
+    if (event.target.closest?.('.spot-hover-card')) return;
     if (activePointers.current.has(event.pointerId)) activePointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (pinchState.current && activePointers.current.size >= 2) {
       const [first, second] = [...activePointers.current.values()]; const pinch = pinchState.current;
@@ -683,6 +699,7 @@ function App() {
     }
     const start = drag.current;
     if (!start) {
+      if (event.pointerType !== 'mouse') return;
       const rect = canvasRef.current.getBoundingClientRect(); const v = view.current;
       const x = (event.clientX - rect.left - v.width / 2 - v.panX) / v.scale + MAP_SIZE / 2;
       const y = (event.clientY - rect.top - v.height / 2 - v.panY) / v.scale + MAP_SIZE / 2;
@@ -799,6 +816,42 @@ function App() {
     zoomToSlot(slot);
   };
   const claimedPercent = usedSlotCount == null ? null : usedSlotCount / 10000;
+  const spotlightCandidates = [...activityFeed].sort((a, b) => a.anchor_slot - b.anchor_slot);
+  const spotlight = spotlightCandidates.length ? spotlightCandidates[Math.floor(activityNow / 86400000) % spotlightCandidates.length] : null;
+  const copySpotLink = async slot => {
+    const url = new URL(window.location.origin); url.searchParams.set('spot', String(slot));
+    try { await navigator.clipboard.writeText(url.href); notify('Direct spot link copied.'); }
+    catch { notify(`Share this link: ${url.href}`); }
+  };
+  const downloadSpotBadge = (spot, owned = false) => {
+    const slot = Number(spot.anchor_slot || spot.slot_number); const { x, y } = slotCoordinates(slot);
+    const card = document.createElement('canvas'); card.width = 1200; card.height = 630; const ctx = card.getContext('2d');
+    ctx.fillStyle = '#142019'; ctx.fillRect(0, 0, 1200, 630);
+    ctx.fillStyle = '#ccf599'; ctx.font = 'bold 28px sans-serif'; ctx.fillText('M  millionpixel', 65, 70);
+    ctx.fillStyle = '#b0c0ab'; ctx.font = '22px sans-serif'; ctx.fillText(owned ? 'A LITTLE SPACE. MY STORY.' : 'A LITTLE SPACE. A NEW STORY.', 65, 140);
+    ctx.fillStyle = '#f4f6ed'; ctx.font = 'bold 48px sans-serif'; ctx.fillText(owned ? 'I claimed' : 'Discover', 65, 220);
+    ctx.fillStyle = '#ccf599'; ctx.font = 'bold 66px sans-serif'; ctx.fillText(`Spot #${slot.toLocaleString()}`, 65, 300);
+    ctx.fillStyle = '#f4f6ed'; ctx.font = '26px sans-serif';
+    let name = spot.display_name || 'A story on the canvas'; while (ctx.measureText(name).width > 555 && name.length) name = name.slice(0, -1);
+    ctx.fillText(name, 65, 355); ctx.fillStyle = '#acbba6'; ctx.font = '22px sans-serif'; ctx.fillText(`Column ${x + 1} · Row ${y + 1}`, 65, 410);
+    const mapX = 740, mapY = 140, size = 360;
+    ctx.fillStyle = '#22382b'; ctx.fillRect(mapX, mapY, size, size); ctx.strokeStyle = '#41634b'; ctx.lineWidth = 1;
+    for (let i = 0; i <= 10; i++) { ctx.beginPath(); ctx.moveTo(mapX + i * 36, mapY); ctx.lineTo(mapX + i * 36, mapY + size); ctx.moveTo(mapX, mapY + i * 36); ctx.lineTo(mapX + size, mapY + i * 36); ctx.stroke(); }
+    const px = mapX + (x + .5) / 1000 * size, py = mapY + (y + .5) / 1000 * size;
+    ctx.strokeStyle = '#ccf599'; ctx.beginPath(); ctx.moveTo(px, mapY); ctx.lineTo(px, mapY + size); ctx.moveTo(mapX, py); ctx.lineTo(mapX + size, py); ctx.stroke();
+    ctx.fillStyle = '#ccf599'; ctx.beginPath(); ctx.arc(px, py, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.font = '18px sans-serif'; ctx.fillStyle = '#b0c0ab'; ctx.fillText('YOUR LOCATION ON THE 1,000 × 1,000 CANVAS', 740, 535);
+    ctx.font = '20px sans-serif'; ctx.fillText(`${window.location.host}/?spot=${slot}`, 65, 550);
+    card.toBlob(blob => { if (!blob) { notify('Could not create the card. Please try again.'); return; } const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `millionpixel-spot-${slot}.png`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); notify('Your sharing card is downloaded.'); }, 'image/png');
+  };
+  useEffect(() => {
+    const slot = Number(new URLSearchParams(window.location.search).get('spot'));
+    if (sharedSpotOpened.current || !supabase || !Number.isInteger(slot) || slot < 1 || slot > 1000000) return;
+    sharedSpotOpened.current = true;
+    setShowSamples(false);
+    goToPixel(undefined, slot);
+  }, []);
+
 
   return (
     <>
@@ -814,6 +867,7 @@ function App() {
           </div>
         </div>
         <section className="intro nav-hero"><div className="nav-hero-copy"><div className="eyebrow">A tiny space on a big canvas</div><h1>Make a little<br /><span>space yours.</span></h1></div><p>Choose a pixel, share your image, and leave your mark on a living canvas.</p><div className="intro-actions"><button className="button button-primary claim-primary" onClick={claimAvailableSpot}>Claim your spot · 50 EGP <span>↗</span></button><span className="intro-hint review-promise">✓ Every submission is reviewed before it goes live.<br />One spot · 30 days · receipt checked privately</span><button className="text-button" onClick={() => document.getElementById('how-it-works')?.scrollIntoView({ behavior: 'smooth' })}>How it works ↓</button></div></section>
+        <section className="activity-ticker" aria-label="Recently published spots"><span className="ticker-title"><i className="live-dot" /> RECENTLY LIVE</span><div className="ticker-items">{activityFeed.length ? activityFeed.map(item => <button key={item.anchor_slot} onClick={() => { setShowSamples(false); goToPixel(undefined, item.anchor_slot); }}><b>#{Number(item.anchor_slot).toLocaleString()}</b> by {item.display_name}<time dateTime={item.published_at}>{relativeTime(item.published_at, activityNow)}</time></button>) : <span>Approved images will appear here as the canvas grows.</span>}</div><small>Approved submissions</small></section>
         {featuredChallenge && <div className="featured-challenge"><div><span className="eyebrow">Community vote · {featuredChallenge.title}</span><b>Monthly spotlight</b><small>Spot #{Number(featuredChallenge.slot_number).toLocaleString()} · {Number(featuredChallenge.vote_count).toLocaleString()} votes</small></div><img src={supabase.storage.from('published-images').getPublicUrl(featuredChallenge.image_path).data.publicUrl} alt={`Top voted spot in ${featuredChallenge.title}`} /><button onClick={() => document.getElementById('community-challenges')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>See the challenge ↘</button></div>}
       </header>
 
@@ -823,6 +877,8 @@ function App() {
         <section className="workspace" id="canvas">
           <div className="canvas-heading"><div><div className="eyebrow">The canvas <span className="prototype-tag">LIVE PROJECT</span></div><h2>One million possibilities</h2></div><div className="canvas-count"><strong>1,000,000</strong><span>numbered slots</span></div></div>
           <section className="founding-progress" aria-label="Canvas progress" aria-busy={usedSlotCount == null}><div><span className="eyebrow">THE FOUNDING CHAPTER</span><h3>{claimedPercent == null ? 'Loading canvas progress…' : `${claimedPercent.toLocaleString('en-US', { maximumFractionDigits: 4 })}% claimed`}</h3><p>The first 100 spots start the story. Make one yours.</p></div><div className="founding-meter"><div className="meter-caption"><b>Founding 100 spots</b><span>{usedSlotCount == null ? '—' : Math.min(100, usedSlotCount)} / 100</span></div><progress aria-label="Published spots toward the first 100" max="100" value={Math.min(100, usedSlotCount || 0)} /><small>{usedSlotCount == null ? 'Checking availability…' : `${usedSlotCount.toLocaleString()} published · ${(1000000 - usedSlotCount).toLocaleString()} available across the full canvas`}</small></div></section>
+          {spotlight && <article className="daily-spotlight"><img src={supabase.storage.from('published-images').getPublicUrl(spotlight.image_path).data.publicUrl} alt={`Spotlight artwork by ${spotlight.display_name}`} /><div><span className="eyebrow">TODAY’S COMMUNITY SPOTLIGHT</span><h3>{spotlight.display_name}</h3><p>Spot #{Number(spotlight.anchor_slot).toLocaleString()} · Published {new Date(spotlight.published_at).toLocaleDateString()}</p><small>A daily rotation among recent approved spots.</small></div><button className="button button-outline" onClick={() => { setShowSamples(false); goToPixel(undefined, spotlight.anchor_slot); }}>Meet this creator ↗</button></article>}
+          <div className="explore-shortcuts" role="group" aria-label="Quick canvas navigation"><span>EXPLORE</span><button onClick={() => { setShowSamples(false); resetView(); }}>Overview</button><button onClick={() => { setShowSamples(false); focusSlot(500501); }}>Center</button><button onClick={() => { setShowSamples(false); const spot = activityFeed[Math.floor(Math.random() * activityFeed.length)]; if (spot) goToPixel(undefined, spot.anchor_slot); else focusSlot(Math.floor(Math.random() * 1000000) + 1); }}>Random spot</button><span className="landmark-label">LANDMARKS</span>{LANDMARKS.map(item => <button key={item.slot} title={item.name} onClick={() => { setShowSamples(false); goToPixel(undefined, item.slot); }}>✦ #{String(item.slot).padStart(6, '0')}</button>)}<small>All spots · 50 EGP / 30 days</small></div>
           <div className="canvas-shell"><div className="canvas-toolbar"><div className="map-legend"><span className="legend-item"><i className="legend-free" /> Available</span><span className="legend-item"><i className="legend-live" /> Published</span><span className="legend-item"><i className="legend-selected" /> Selected</span></div><div className="zoom-controls"><button onClick={() => changeZoom(1 / 1.55)} aria-label="Zoom out">−</button><span>{currentScale.toFixed(currentScale < 10 ? 1 : 0)}×</span><button onClick={() => changeZoom(1.55)} aria-label="Zoom in">+</button><button className="reset-button" onClick={resetView}>Reset</button></div></div>
             <form className="discovery-search" onSubmit={searchCanvas}>
               <label className="discovery-keyword">Search creators or stories<input value={discoveryQuery} onChange={event => setDiscoveryQuery(event.target.value)} placeholder="Name or keyword" /></label>
@@ -836,8 +892,8 @@ function App() {
             <div className="canvas-preview-row"><div className="canvas-preview-options" role="group" aria-label="Image preview style"><span>Preview</span><button type="button" className={previewStyle === 'default' ? 'active' : ''} aria-pressed={previewStyle === 'default'} onClick={() => setPreviewStyle('default')}>Default</button><button type="button" className={previewStyle === 'pixel' ? 'active' : ''} aria-pressed={previewStyle === 'pixel'} onClick={() => setPreviewStyle('pixel')}>Pixel mosaic</button><button type="button" className={previewStyle === 'collage' ? 'active' : ''} aria-pressed={previewStyle === 'collage'} onClick={() => setPreviewStyle('collage')}>Art collage</button></div><form className="pixel-finder" onSubmit={goToPixel}><label htmlFor="pixel-number">Go to pixel</label><input id="pixel-number" type="number" min="1" max="1000000" step="1" value={pixelSearch} onChange={event => setPixelSearch(event.target.value)} placeholder="Enter number" required /><button type="submit" disabled={searchingPixel}>{searchingPixel ? 'Finding…' : 'Go'}</button></form></div>
             <div className="canvas-wrap" ref={wrapRef} onWheel={handleWheel} onPointerDown={mapPointerDown} onPointerMove={mapPointerMove} onPointerLeave={() => { if (!activePointers.current.size) { setHoveredSlot(null); setHoveredPoint(null); } }} onPointerUp={mapPointerUp} onPointerCancel={event => { activePointers.current.delete(event.pointerId); pinchState.current = null; drag.current = null; }}>
               <canvas ref={canvasRef} aria-label="Interactive map of one million numbered slots. Zoom in to select a slot." />
-              {hoveredSlot && hoveredPoint && hoveredPublished && <div className="spot-hover-card" style={{ left: `${Math.min(hoveredPoint.x + 16, view.current.width - 242)}px`, top: `${Math.min(Math.max(hoveredPoint.y + 16, 8), view.current.height - 215)}px` }}><img src={hoveredPublished.imageUrl} alt="" /><div><b>{hoveredPublished.display_name}</b><span>Spot #{Number(hoveredPublished.anchor_slot || hoveredPublished.slot_number).toLocaleString()} · {Number(hoveredPublished.spot_size) || 1}×{Number(hoveredPublished.spot_size) || 1}</span><p>{hoveredPublished.description?.trim() || 'A place on the Million Pixel canvas.'}</p>{hoveredPublished.website_url && <a href={hoveredPublished.website_url} target="_blank" rel="noreferrer">Visit link ↗</a>}<small>{hoveredPublished.published_at ? `Published ${new Date(hoveredPublished.published_at).toLocaleDateString()}` : 'Published image'}</small></div></div>}
-              {hoveredSlot && hoveredPoint && !hoveredPublished && <div className="slot-hover-label" style={{ left: `${Math.min(hoveredPoint.x + 12, view.current.width - 150)}px`, top: `${Math.max(hoveredPoint.y - 34, 8)}px` }}><b>Pixel #{hoveredSlot.toLocaleString()}</b><span>Available · click to choose</span></div>}
+              {hoveredSlot && hoveredPoint && hoveredPublished && <div className="spot-hover-card" onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()} style={{ left: `${Math.max(8, Math.min(hoveredPoint.x - 12, view.current.width - 300))}px`, top: `${Math.min(Math.max(hoveredPoint.y + 16, 8), view.current.height - 250)}px` }}><img src={hoveredPublished.imageUrl} alt="" /><div><b>{hoveredPublished.display_name}</b><span>Spot #{Number(hoveredPublished.anchor_slot || hoveredPublished.slot_number).toLocaleString()} · {Number(hoveredPublished.spot_size) || 1}×{Number(hoveredPublished.spot_size) || 1}</span><p>{hoveredPublished.description?.trim() || 'A place on the Million Pixel canvas.'}</p>{hoveredPublished.website_url && <a href={hoveredPublished.website_url} target="_blank" rel="noreferrer">Visit link ↗</a>}<button className="hover-open" onClick={() => openPublishedSpot(hoveredPublished)}>Open spot ↗</button><small>{hoveredPublished.published_at ? `Published ${new Date(hoveredPublished.published_at).toLocaleDateString()}` : 'Published image'}</small></div></div>}
+              {hoveredSlot && hoveredPoint && !hoveredPublished && <div className="slot-hover-label" style={{ left: `${Math.min(hoveredPoint.x + 12, view.current.width - 150)}px`, top: `${Math.max(hoveredPoint.y - 34, 8)}px` }}><b>Pixel #{hoveredSlot.toLocaleString()}</b><span>{landmarkName(hoveredSlot) ? `✦ ${landmarkName(hoveredSlot)} · 50 EGP` : 'Available · click to choose'}</span></div>}
               {currentScale < 1.3 && showSamples && usedSlotCount != null && usedSlotCount < 100 && <div className="sample-gallery" onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()} onWheel={event => event.stopPropagation()}><div className="sample-gallery-head"><div><span className="eyebrow">IMAGINE WHAT WE CAN MAKE</span><h3>A little inspiration. A million possibilities.</h3></div><button onClick={() => setShowSamples(false)} aria-label="Close sample gallery and explore real canvas">×</button></div><div className="sample-art-grid">{Array.from({length: 8}, (_, index) => <SampleArt key={index} index={index} />)}</div><div className="sample-gallery-foot"><p><b>Sample artwork</b> · Illustrations only. These are not purchases or reserved spots.</p><button className="text-button" onClick={() => setShowSamples(false)}>Explore the real canvas ↗</button></div></div>}
               {showGuide && <div className="claim-guide" role="status" onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}><span className="guide-square">＋</span><span className="guide-arrow">→</span><div><b>Choose a square. Share your story.</b><small>Click an available pixel → sign in → upload your image.</small></div><button onClick={() => setShowGuide(false)} aria-label="Dismiss quick guide">×</button></div>}
             </div>
@@ -887,8 +943,8 @@ function App() {
       {drawer && <aside className="drawer open"><button className="close-button" onClick={() => { if (drawer === 'signin') { window.localStorage.removeItem(PENDING_CLAIM_KEY); claimResumeRef.current = false; } setDrawer(''); }} aria-label="Close">×</button>
         {drawer === 'setup' && <><div className="eyebrow">Configuration</div><h2>Connect Supabase</h2><p className="drawer-lead">Follow the project README to create a Supabase project, apply the migration, set the two Vite environment variables, and deploy the admin-review Edge Function.</p></>}
         {drawer === 'signin' && <><div className="eyebrow">Welcome</div><h2>{authMode === 'signup' ? 'Create your account' : 'Sign in'}</h2><p className="drawer-lead">{authMode === 'signup' ? 'Create an account to claim a pixel and share your image.' : 'Sign in to claim a pixel, like images, or manage your submissions.'}</p><AuthForm email={email} setEmail={setEmail} password={password} setPassword={setPassword} mode={authMode} setMode={setAuthMode} onSubmit={signInWithPassword} onSignUp={signUp} onMagicLink={signIn} busy={busy} message={authMessage} /></>}
-        {drawer === 'account' && <><div className="eyebrow">Your account</div><h2>My submissions</h2><p className="drawer-lead">Signed in as <strong>{session?.user.email}</strong></p><div className="referral-account-card"><span className="eyebrow">Your referral link</span><b>{profile?.referral_code || 'Generating your code…'}</b><small>Both of you earn 15% of a referred spot’s price in credits after it is approved.</small><button type="button" onClick={copyReferralLink} disabled={!profile?.referral_code}>Copy invite link</button><div>Credit balance <strong>{formatEGP(availableCredits * SPOT_PRICE_EGP)}</strong></div></div><div className="claim-list">{myClaims.length ? myClaims.map(claim => <div className="claim-row" key={claim.id}><b>Spot #{claim.slot_number.toLocaleString()} · {Number(claim.spot_size) || 1}×{Number(claim.spot_size) || 1}</b><span className={`status-pill ${claim.status}`}>{claim.status}</span><small>{claim.display_name} · {new Date(claim.created_at).toLocaleDateString()}</small></div>) : <div className="queue-empty">No submissions yet. Choose an open pixel on the map.</div>}</div><button className="button button-outline button-wide" onClick={signOut}>Sign out</button></>}
-        {drawer === 'image' && selectedImage && <><div className="eyebrow">Published spot · #{Number(selectedImage.anchor_slot || selectedImage.slot_number).toLocaleString()}</div><h2>{selectedImage.display_name}</h2><div className="image-detail-photo"><img src={selectedImage.imageUrl} alt={`Image published by ${selectedImage.display_name}`} onDoubleClick={toggleImageLike} title="Double-click to like" /></div><div className="spot-profile-meta"><span>{Number(selectedImage.spot_size) || 1}×{Number(selectedImage.spot_size) || 1} featured area</span><span>Published {selectedImage.published_at ? new Date(selectedImage.published_at).toLocaleDateString() : 'date unavailable'}</span></div>{selectedImage.website_url && <a className="spot-profile-link" href={selectedImage.website_url} target="_blank" rel="noreferrer">Visit website or social profile ↗</a>}<div className="image-story">{selectedImage.description?.trim() ? selectedImage.description : <span className="empty-story">No story was added for this image.</span>}</div><button className={`image-like-button ${imageLikes.liked ? 'liked' : ''}`} type="button" onClick={toggleImageLike} disabled={likeBusy} aria-pressed={imageLikes.liked}><span aria-hidden="true">{imageLikes.liked ? '♥' : '♡'}</span><b>{imageLikes.liked ? 'Liked' : 'Like'}</b><span className="like-count">{imageLikes.count.toLocaleString()}</span></button>{!session?.user && <p className="image-like-hint">Sign in to like this image.</p>}</>}
+        {drawer === 'account' && <><div className="eyebrow">Your account</div><h2>My submissions</h2><p className="drawer-lead">Signed in as <strong>{session?.user.email}</strong></p><div className="referral-account-card"><span className="eyebrow">Your referral link</span><b>{profile?.referral_code || 'Generating your code…'}</b><small>Both of you earn 15% of a referred spot’s price in credits after it is approved.</small><button type="button" onClick={copyReferralLink} disabled={!profile?.referral_code}>Copy invite link</button><div>Credit balance <strong>{formatEGP(availableCredits * SPOT_PRICE_EGP)}</strong></div></div><div className="claim-list">{myClaims.length ? myClaims.map(claim => <div className="claim-row" key={claim.id}><b>Spot #{claim.slot_number.toLocaleString()} · {Number(claim.spot_size) || 1}×{Number(claim.spot_size) || 1}</b><span className={`status-pill ${claim.status}`}>{claim.status}</span><small>{claim.display_name} · {new Date(claim.created_at).toLocaleDateString()}</small>{claim.status === 'published' && <button className="text-button" onClick={() => downloadSpotBadge(claim, true)}>Download my spot badge · PNG ↗</button>}</div>) : <div className="queue-empty">No submissions yet. Choose an open pixel on the map.</div>}</div><button className="button button-outline button-wide" onClick={signOut}>Sign out</button></>}
+        {drawer === 'image' && selectedImage && <><div className="eyebrow">Published spot · #{Number(selectedImage.anchor_slot || selectedImage.slot_number).toLocaleString()}</div><h2>{selectedImage.display_name}</h2><div className="image-detail-photo"><img src={selectedImage.imageUrl} alt={`Image published by ${selectedImage.display_name}`} onDoubleClick={toggleImageLike} title="Double-click to like" /></div><div className="spot-profile-meta">{landmarkName(selectedImage.anchor_slot || selectedImage.slot_number) && <span className="landmark-badge">✦ {landmarkName(selectedImage.anchor_slot || selectedImage.slot_number)}</span>}<span>{Number(selectedImage.spot_size) || 1}×{Number(selectedImage.spot_size) || 1} featured area</span><span>Published {selectedImage.published_at ? new Date(selectedImage.published_at).toLocaleDateString() : 'date unavailable'}</span></div>{selectedImage.website_url && <a className="spot-profile-link" href={selectedImage.website_url} target="_blank" rel="noreferrer">Visit website or social profile ↗</a>}<div className="image-story">{selectedImage.description?.trim() ? selectedImage.description : <span className="empty-story">No story was added for this image.</span>}</div><button className={`image-like-button ${imageLikes.liked ? 'liked' : ''}`} type="button" onClick={toggleImageLike} disabled={likeBusy} aria-pressed={imageLikes.liked}><span aria-hidden="true">{imageLikes.liked ? '♥' : '♡'}</span><b>{imageLikes.liked ? 'Liked' : 'Like'}</b><span className="like-count">{imageLikes.count.toLocaleString()}</span></button>{!session?.user && <p className="image-like-hint">Sign in to like this image.</p>}<div className="spot-share-actions"><button className="button button-outline" onClick={() => downloadSpotBadge(selectedImage, myClaims.some(claim => claim.status === 'published' && Number(claim.slot_number) === Number(selectedImage.anchor_slot || selectedImage.slot_number)))}>Download sharing card · PNG</button><button className="text-button" onClick={() => copySpotLink(selectedImage.anchor_slot || selectedImage.slot_number)}>Copy direct spot link ↗</button></div></>}
         {drawer === 'admin' && <><div className="eyebrow">Protected review queue</div><h2>Review submissions</h2><p className="drawer-lead">Only accounts granted admin access can review proof and publish images.</p><div className="queue-heading">Pending review <small>{pendingClaims.length} requests</small></div>{pendingClaims.length ? pendingClaims.map(claim => <article className="submission-card" key={claim.id}><div className="submission-card-head"><strong>Pixel #{claim.slot_number.toLocaleString()} · {claim.display_name}</strong><span className="status-pill">Pending</span></div><div className="submission-meta">{claim.contact}<br />Submitted {new Date(claim.created_at).toLocaleString()}<br />Amount due: {claim.payment_amount_egp != null ? formatEGP(claim.payment_amount_egp) : `${Number(claim.amount_due ?? 1).toFixed(2)} (legacy claim)`}{claim.payment_method && <><br />Method: {PAYMENT_METHODS[claim.payment_method] || claim.payment_method}</>}{claim.payment_reference && <><br />Transaction reference: {claim.payment_reference}</>}</div>{claim.description?.trim() && <p className="submission-story">{claim.description}</p>}<div className="submission-preview">{claim.artworkUrl && <img src={claim.artworkUrl} alt="Submitted artwork" />}{claim.proofUrl ? <a href={claim.proofUrl} target="_blank" rel="noreferrer">Open private payment proof ↗</a> : <span className="submission-meta">Paid fully with account credits</span>}</div><div className="queue-actions"><button disabled={busy} onClick={() => reviewClaim(claim.id, 'approve')}>Approve & publish</button><button className="reject-button" disabled={busy} onClick={() => reviewClaim(claim.id, 'reject')}>Reject</button></div></article>) : <div className="queue-empty">No pending submissions.</div>}</>}
       </aside>}
       {replayOpen && <div className="replay-overlay"><aside className="replay-modal"><button className="close-button" onClick={() => setReplayOpen(false)} aria-label="Close replay">×</button><div className="eyebrow">Share the progress</div><h2>This week on the canvas</h2><p className="drawer-lead">A vertical 9:16 replay of spots published in the last seven days.</p><canvas className="replay-canvas" ref={replayCanvasRef} /><div className="replay-progress"><i style={{ width: `${replayProgress * 100}%` }} /></div><p className="replay-status">{replayMessage}</p><button type="button" className="button button-outline button-wide" onClick={() => { setReplayOpen(false); createWeeklyReplay(); }}>Make another replay</button></aside></div>}
