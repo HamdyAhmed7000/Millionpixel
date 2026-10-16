@@ -3,6 +3,10 @@ import { hasSupabaseConfig, supabase } from './supabase.js';
 
 const MAP_SIZE = 1000;
 const MAX_FILE_BYTES = 3 * 1024 * 1024;
+const SPOT_PRICE_EGP = 50;
+const PAYMENT_NUMBER = '01024227390';
+const PAYMENT_METHODS = { instapay: 'InstaPay', vodafone_cash: 'Vodafone Cash', credits: 'Account credits' };
+const formatEGP = amount => `${Number(amount).toFixed(2)} EGP`;
 const PENDING_CLAIM_KEY = 'million-pixel-pending-claim-slot';
 const allowedArtwork = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
@@ -74,7 +78,7 @@ function App() {
   const [drawer, setDrawer] = useState('');
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState('');
-  const [form, setForm] = useState({ displayName: '', contact: '', description: '', websiteUrl: '', tags: '', referralCode: referralCodeFromLink, artwork: null, proof: null });
+  const [form, setForm] = useState({ displayName: '', contact: '', description: '', websiteUrl: '', tags: '', referralCode: referralCodeFromLink, paymentMethod: 'instapay', paymentReference: '', artwork: null, proof: null });
   const grossSpotPrice = selectedSpotSize * selectedSpotSize;
   const availableCredits = Number(profile?.credit_balance || 0);
   const creditForThisClaim = useCredits ? Math.min(availableCredits, grossSpotPrice) : 0;
@@ -692,6 +696,7 @@ function App() {
     event.preventDefault();
     if (!session?.user || !selectedSlot) { notify('Sign in and choose a pixel first.'); return; }
     const { artwork, proof, description, websiteUrl, tags, referralCode } = form;
+    if (claimAmountDue > 0 && (!['instapay', 'vodafone_cash'].includes(form.paymentMethod) || form.paymentReference.trim().length < 3)) { notify('Choose a payment method and enter the transaction reference from your receipt.'); return; }
     if (!artwork || (claimAmountDue > 0 && !proof)) { notify(claimAmountDue > 0 ? 'Choose your image and payment proof before submitting.' : 'Choose your image before submitting.'); return; }
     const { x, y } = slotCoordinates(selectedSlot);
     if (x + selectedSpotSize > MAP_SIZE || y + selectedSpotSize > MAP_SIZE) { notify('Choose a spot that has enough free space for this size.'); return; }
@@ -714,15 +719,17 @@ function App() {
         slot_number: selectedSlot, spot_size: selectedSpotSize, website_url: websiteUrl.trim() || null,
         user_id: userId, display_name: form.displayName.trim(), contact: form.contact.trim(),
         description: description.trim(), tags: tags.trim().slice(0, 160), artwork_path: artworkPath, proof_path: proofPath, status: 'pending',
-        referral_code: referralCode.trim() || null, credits_requested: creditForThisClaim
+        referral_code: referralCode.trim() || null, credits_requested: creditForThisClaim,
+        payment_method: claimAmountDue > 0 ? form.paymentMethod : 'credits',
+        payment_reference: claimAmountDue > 0 ? form.paymentReference.trim() : null
       });
       if (error) {
-        if (error.code === '23505') throw new Error('That pixel was just reserved. Please choose another.');
+        if (error.code === '23505') throw new Error(error.message.includes('slot_claims_payment_reference') ? 'This payment reference is already attached to a submission. Please check My submissions.' : 'That pixel was just reserved. Please choose another.');
         throw error;
       }
       setMyClaims(current => [{ id: token, slot_number: selectedSlot, spot_size: selectedSpotSize, display_name: form.displayName.trim(), status: 'pending', created_at: new Date().toISOString() }, ...current]);
       if (profile) setProfile({ ...profile, credit_balance: Math.max(0, availableCredits - creditForThisClaim) });
-      setFormOpen(false); setForm({ displayName: '', contact: '', description: '', websiteUrl: '', tags: '', referralCode: '', artwork: null, proof: null }); setDrawer('account'); notify('Submitted for manual review.');
+      setFormOpen(false); setForm({ displayName: '', contact: '', description: '', websiteUrl: '', tags: '', referralCode: '', paymentMethod: 'instapay', paymentReference: '', artwork: null, proof: null }); setDrawer('account'); notify('Submitted for manual review.');
     } catch (error) { console.error(error); notify(error.message || 'Submission failed. Please try again.'); }
     finally { setBusy(false); }
   };
@@ -817,7 +824,7 @@ function App() {
         </section>
 
         <section className="how-it-works"><div className="eyebrow">Simple by design</div><div className="steps"><article><span>01</span><h3>Choose a slot</h3><p>Explore the canvas and pick a free numbered pixel.</p></article><article><span>02</span><h3>Send your image</h3><p>Add your name and contact, plus payment proof for review.</p></article><article><span>03</span><h3>Go live</h3><p>Once approved, your image appears on the canvas for 30 days.</p></article></div></section>
-        <section className="demo-note"><span className="note-icon">ⓘ</span><div><b>Payments are reviewed manually</b><p>Payment proof is private and only available to you and authorized reviewers. No payment processor is connected.</p></div></section>
+        <section className="demo-note"><span className="note-icon">ⓘ</span><div><b>InstaPay &amp; Vodafone Cash · 50 EGP per spot</b><p>Transfer using your preferred app, then upload your receipt. Payments are checked manually before publishing. Your receipt is private and only available to you and authorized reviewers.</p></div></section>
       </main>
 
       <div className={`scrim ${drawer || formOpen ? 'open' : ''}`} onClick={() => { if (drawer === 'signin') { window.localStorage.removeItem(PENDING_CLAIM_KEY); claimResumeRef.current = false; } setDrawer(''); setFormOpen(false); }} />
@@ -831,9 +838,9 @@ function App() {
           <label className="field-label">Tags <span>Optional · separate with commas</span><input type="text" maxLength="160" value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })} placeholder="art, photography, gaming" /></label>
           <label className="field-label">Referral code <span>Optional · shared by a friend</span><input type="text" maxLength="32" value={form.referralCode} onChange={e => setForm({ ...form, referralCode: e.target.value.toUpperCase() })} placeholder="MP-XXXXXXXXXXXX" /></label>
           <label className="field-label">Your image <span>PNG, JPG, GIF, WebP · 3 MB max</span><input type="file" accept="image/png,image/jpeg,image/gif,image/webp" required onChange={e => setForm({ ...form, artwork: e.target.files?.[0] || null })} /></label>
-          {availableCredits > 0 && <label className="check-row credit-toggle"><input type="checkbox" checked={useCredits} onChange={event => setUseCredits(event.target.checked)} /><span>Use available credits (${availableCredits.toFixed(2)})</span></label>}
-          {claimAmountDue > 0 && <label className="field-label">Manual payment proof <span>Image or PDF · 3 MB max</span><input type="file" accept="image/*,application/pdf" required onChange={e => setForm({ ...form, proof: e.target.files?.[0] || null })} /></label>}
-          <div className="payment-box"><div><span>{selectedSpotSize}×{selectedSpotSize} spot · Amount due</span><b>${claimAmountDue.toFixed(2)}</b></div><small>{claimAmountDue === 0 ? 'Credits cover this spot; no payment proof is needed.' : 'Payment is reviewed manually. Credits are applied before submission.'} Refer a friend and both accounts earn 15% of the spot price as credits after approval.</small></div>
+          {availableCredits > 0 && <label className="check-row credit-toggle"><input type="checkbox" checked={useCredits} onChange={event => setUseCredits(event.target.checked)} /><span>Use available credits ({formatEGP(availableCredits * SPOT_PRICE_EGP)})</span></label>}
+          <div className="payment-box"><div><span>Amount due · 30 days</span><b>{formatEGP(claimAmountDue * SPOT_PRICE_EGP)}</b></div><small>{formatEGP(SPOT_PRICE_EGP)} per spot. {claimAmountDue === 0 ? 'Credits cover this spot; no transfer or receipt is needed.' : 'Account credits are deducted from the amount shown.'} Referral rewards are 15% in account credits after approval.</small></div>
+          {claimAmountDue > 0 && <EgyptPayment form={form} setForm={setForm} amount={claimAmountDue * SPOT_PRICE_EGP} slot={selectedSlot} notify={notify} />}
           <label className="check-row"><input type="checkbox" required /><span>I understand my image will be displayed publicly if approved.</span></label>
           <button className="button button-primary button-wide" type="submit" disabled={busy}>{busy ? 'Submitting…' : 'Send for review ↗'}</button>
           <p className="form-disclaimer">Files are stored in Supabase Storage; payment proof remains in a private bucket.</p>
@@ -843,14 +850,35 @@ function App() {
       {drawer && <aside className="drawer open"><button className="close-button" onClick={() => { if (drawer === 'signin') { window.localStorage.removeItem(PENDING_CLAIM_KEY); claimResumeRef.current = false; } setDrawer(''); }} aria-label="Close">×</button>
         {drawer === 'setup' && <><div className="eyebrow">Configuration</div><h2>Connect Supabase</h2><p className="drawer-lead">Follow the project README to create a Supabase project, apply the migration, set the two Vite environment variables, and deploy the admin-review Edge Function.</p></>}
         {drawer === 'signin' && <><div className="eyebrow">Welcome</div><h2>{authMode === 'signup' ? 'Create your account' : 'Sign in'}</h2><p className="drawer-lead">{authMode === 'signup' ? 'Create an account to claim a pixel and share your image.' : 'Sign in to claim a pixel, like images, or manage your submissions.'}</p><AuthForm email={email} setEmail={setEmail} password={password} setPassword={setPassword} mode={authMode} setMode={setAuthMode} onSubmit={signInWithPassword} onSignUp={signUp} onMagicLink={signIn} busy={busy} message={authMessage} /></>}
-        {drawer === 'account' && <><div className="eyebrow">Your account</div><h2>My submissions</h2><p className="drawer-lead">Signed in as <strong>{session?.user.email}</strong></p><div className="referral-account-card"><span className="eyebrow">Your referral link</span><b>{profile?.referral_code || 'Generating your code…'}</b><small>Both of you earn 15% of a referred spot’s price in credits after it is approved.</small><button type="button" onClick={copyReferralLink} disabled={!profile?.referral_code}>Copy invite link</button><div>Credit balance <strong>${availableCredits.toFixed(2)}</strong></div></div><div className="claim-list">{myClaims.length ? myClaims.map(claim => <div className="claim-row" key={claim.id}><b>Spot #{claim.slot_number.toLocaleString()} · {Number(claim.spot_size) || 1}×{Number(claim.spot_size) || 1}</b><span className={`status-pill ${claim.status}`}>{claim.status}</span><small>{claim.display_name} · {new Date(claim.created_at).toLocaleDateString()}</small></div>) : <div className="queue-empty">No submissions yet. Choose an open pixel on the map.</div>}</div><button className="button button-outline button-wide" onClick={signOut}>Sign out</button></>}
+        {drawer === 'account' && <><div className="eyebrow">Your account</div><h2>My submissions</h2><p className="drawer-lead">Signed in as <strong>{session?.user.email}</strong></p><div className="referral-account-card"><span className="eyebrow">Your referral link</span><b>{profile?.referral_code || 'Generating your code…'}</b><small>Both of you earn 15% of a referred spot’s price in credits after it is approved.</small><button type="button" onClick={copyReferralLink} disabled={!profile?.referral_code}>Copy invite link</button><div>Credit balance <strong>{formatEGP(availableCredits * SPOT_PRICE_EGP)}</strong></div></div><div className="claim-list">{myClaims.length ? myClaims.map(claim => <div className="claim-row" key={claim.id}><b>Spot #{claim.slot_number.toLocaleString()} · {Number(claim.spot_size) || 1}×{Number(claim.spot_size) || 1}</b><span className={`status-pill ${claim.status}`}>{claim.status}</span><small>{claim.display_name} · {new Date(claim.created_at).toLocaleDateString()}</small></div>) : <div className="queue-empty">No submissions yet. Choose an open pixel on the map.</div>}</div><button className="button button-outline button-wide" onClick={signOut}>Sign out</button></>}
         {drawer === 'image' && selectedImage && <><div className="eyebrow">Published spot · #{Number(selectedImage.anchor_slot || selectedImage.slot_number).toLocaleString()}</div><h2>{selectedImage.display_name}</h2><div className="image-detail-photo"><img src={selectedImage.imageUrl} alt={`Image published by ${selectedImage.display_name}`} onDoubleClick={toggleImageLike} title="Double-click to like" /></div><div className="spot-profile-meta"><span>{Number(selectedImage.spot_size) || 1}×{Number(selectedImage.spot_size) || 1} featured area</span><span>Published {selectedImage.published_at ? new Date(selectedImage.published_at).toLocaleDateString() : 'date unavailable'}</span></div>{selectedImage.website_url && <a className="spot-profile-link" href={selectedImage.website_url} target="_blank" rel="noreferrer">Visit website or social profile ↗</a>}<div className="image-story">{selectedImage.description?.trim() ? selectedImage.description : <span className="empty-story">No story was added for this image.</span>}</div><button className={`image-like-button ${imageLikes.liked ? 'liked' : ''}`} type="button" onClick={toggleImageLike} disabled={likeBusy} aria-pressed={imageLikes.liked}><span aria-hidden="true">{imageLikes.liked ? '♥' : '♡'}</span><b>{imageLikes.liked ? 'Liked' : 'Like'}</b><span className="like-count">{imageLikes.count.toLocaleString()}</span></button>{!session?.user && <p className="image-like-hint">Sign in to like this image.</p>}</>}
-        {drawer === 'admin' && <><div className="eyebrow">Protected review queue</div><h2>Review submissions</h2><p className="drawer-lead">Only accounts granted admin access can review proof and publish images.</p><div className="queue-heading">Pending review <small>{pendingClaims.length} requests</small></div>{pendingClaims.length ? pendingClaims.map(claim => <article className="submission-card" key={claim.id}><div className="submission-card-head"><strong>Pixel #{claim.slot_number.toLocaleString()} · {claim.display_name}</strong><span className="status-pill">Pending</span></div><div className="submission-meta">{claim.contact}<br />Submitted {new Date(claim.created_at).toLocaleString()}<br />Amount due: ${Number(claim.amount_due ?? 1).toFixed(2)}</div>{claim.description?.trim() && <p className="submission-story">{claim.description}</p>}<div className="submission-preview">{claim.artworkUrl && <img src={claim.artworkUrl} alt="Submitted artwork" />}{claim.proofUrl ? <a href={claim.proofUrl} target="_blank" rel="noreferrer">Open private payment proof ↗</a> : <span className="submission-meta">Paid fully with account credits</span>}</div><div className="queue-actions"><button disabled={busy} onClick={() => reviewClaim(claim.id, 'approve')}>Approve & publish</button><button className="reject-button" disabled={busy} onClick={() => reviewClaim(claim.id, 'reject')}>Reject</button></div></article>) : <div className="queue-empty">No pending submissions.</div>}</>}
+        {drawer === 'admin' && <><div className="eyebrow">Protected review queue</div><h2>Review submissions</h2><p className="drawer-lead">Only accounts granted admin access can review proof and publish images.</p><div className="queue-heading">Pending review <small>{pendingClaims.length} requests</small></div>{pendingClaims.length ? pendingClaims.map(claim => <article className="submission-card" key={claim.id}><div className="submission-card-head"><strong>Pixel #{claim.slot_number.toLocaleString()} · {claim.display_name}</strong><span className="status-pill">Pending</span></div><div className="submission-meta">{claim.contact}<br />Submitted {new Date(claim.created_at).toLocaleString()}<br />Amount due: {claim.payment_amount_egp != null ? formatEGP(claim.payment_amount_egp) : `${Number(claim.amount_due ?? 1).toFixed(2)} (legacy claim)`}{claim.payment_method && <><br />Method: {PAYMENT_METHODS[claim.payment_method] || claim.payment_method}</>}{claim.payment_reference && <><br />Transaction reference: {claim.payment_reference}</>}</div>{claim.description?.trim() && <p className="submission-story">{claim.description}</p>}<div className="submission-preview">{claim.artworkUrl && <img src={claim.artworkUrl} alt="Submitted artwork" />}{claim.proofUrl ? <a href={claim.proofUrl} target="_blank" rel="noreferrer">Open private payment proof ↗</a> : <span className="submission-meta">Paid fully with account credits</span>}</div><div className="queue-actions"><button disabled={busy} onClick={() => reviewClaim(claim.id, 'approve')}>Approve & publish</button><button className="reject-button" disabled={busy} onClick={() => reviewClaim(claim.id, 'reject')}>Reject</button></div></article>) : <div className="queue-empty">No pending submissions.</div>}</>}
       </aside>}
       {replayOpen && <div className="replay-overlay"><aside className="replay-modal"><button className="close-button" onClick={() => setReplayOpen(false)} aria-label="Close replay">×</button><div className="eyebrow">Share the progress</div><h2>This week on the canvas</h2><p className="drawer-lead">A vertical 9:16 replay of spots published in the last seven days.</p><canvas className="replay-canvas" ref={replayCanvasRef} /><div className="replay-progress"><i style={{ width: `${replayProgress * 100}%` }} /></div><p className="replay-status">{replayMessage}</p><button type="button" className="button button-outline button-wide" onClick={() => { setReplayOpen(false); createWeeklyReplay(); }}>Make another replay</button></aside></div>}
       {toast && <div className="toast show" role="status">{toast}</div>}
     </>
   );
+}
+
+function EgyptPayment({ form, setForm, amount, slot, notify }) {
+  const copyNumber = async () => {
+    try { await navigator.clipboard.writeText(PAYMENT_NUMBER); notify('Receiving number copied.'); }
+    catch { notify(`Receiving number: ${PAYMENT_NUMBER}`); }
+  };
+  return <section className="egypt-payment" aria-labelledby="egypt-payment-title">
+    <h3 id="egypt-payment-title">Pay in Egypt</h3>
+    <fieldset className="payment-methods"><legend>Choose your transfer method</legend>
+      {['instapay', 'vodafone_cash'].map(method => <label key={method} className={form.paymentMethod === method ? 'selected' : ''}>
+        <input type="radio" name="payment-method" value={method} checked={form.paymentMethod === method} onChange={() => setForm({ ...form, paymentMethod: method, paymentReference: '', proof: null })} />
+        <span>{PAYMENT_METHODS[method]}</span>
+      </label>)}
+    </fieldset>
+    <div className="payment-recipient"><span>{form.paymentMethod === 'instapay' ? 'InstaPay receiving mobile number' : 'Vodafone Cash wallet number'}</span><div><strong dir="ltr">{PAYMENT_NUMBER}</strong><button type="button" onClick={copyNumber}>Copy number</button></div></div>
+    <ol className="payment-instructions"><li>Open {PAYMENT_METHODS[form.paymentMethod]} and choose {form.paymentMethod === 'instapay' ? 'Send money → Mobile number' : 'Transfer money'}.</li><li>Enter the receiving number and verify the recipient shown in the app.</li><li>Transfer <strong>{formatEGP(amount)}</strong>. If a note is available, enter <strong>Spot #{slot?.toLocaleString()}</strong>.</li><li>Keep the successful transfer receipt and add it below.</li></ol>
+    <p className="payment-review-note">Your bank or wallet may charge a transfer fee. Your spot stays pending until the payment and image are reviewed.</p>
+    <label className="field-label">Transaction reference<input type="text" required minLength="3" maxLength="100" value={form.paymentReference} onChange={event => setForm({ ...form, paymentReference: event.target.value })} placeholder="Reference or transaction ID on your receipt" autoComplete="off" /></label>
+    <label className="field-label">Successful transfer receipt <span>Image or PDF · 3 MB max</span><input key={form.paymentMethod} type="file" accept="image/*,application/pdf" required onChange={event => setForm({ ...form, proof: event.target.files?.[0] || null })} /></label>
+  </section>;
 }
 
 function AuthForm({ email, setEmail, password, setPassword, mode, setMode, onSubmit, onSignUp, onMagicLink, busy, message }) {
