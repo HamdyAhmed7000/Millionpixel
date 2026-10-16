@@ -36,6 +36,20 @@ function App() {
   const mosaicDirty = useRef(true);
   const view = useRef({ width: 0, height: 0, baseScale: 0, scale: 0, panX: 0, panY: 0 });
   const drag = useRef(null);
+  const [showSamples, setShowSamples] = useState(true);
+  const [showGuide, setShowGuide] = useState(false);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('million-pixel-guide-v1')) return;
+      localStorage.setItem('million-pixel-guide-v1', 'seen');
+    } catch { /* The guide also works with storage disabled. */ }
+    setShowGuide(true);
+  }, []);
+  useEffect(() => {
+    if (!showGuide) return;
+    const timer = setTimeout(() => setShowGuide(false), 3000);
+    return () => clearTimeout(timer);
+  }, [showGuide]);
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
   const [email, setEmail] = useState('');
@@ -288,6 +302,16 @@ function App() {
         ctx.stroke();
       }
     }
+    // Coarse coordinates stay visible before individual pixels become readable.
+    if (scale < 11 && bounds) {
+      const step = scale < 1 ? 50 : scale < 3 ? 10 : 5;
+      ctx.beginPath(); ctx.strokeStyle = '#344b3d'; ctx.lineWidth = .6;
+      for (let x = Math.ceil(bounds.minX / step) * step; x <= bounds.maxX; x += step) { const px = toScreen(x, 0).x; ctx.moveTo(px, topLeft.y); ctx.lineTo(px, bottomRight.y); }
+      for (let y = Math.ceil(bounds.minY / step) * step; y <= bounds.maxY; y += step) { const py = toScreen(0, y).y; ctx.moveTo(topLeft.x, py); ctx.lineTo(bottomRight.x, py); }
+      ctx.stroke();
+      ctx.font = '10px monospace'; ctx.fillStyle = '#829785';
+      for (let x = Math.ceil(bounds.minX / (step * 4)) * step * 4; x <= bounds.maxX; x += step * 4) ctx.fillText(`X ${x}`, toScreen(x, 0).x + 4, Math.max(14, topLeft.y + 14));
+    }
     const anchors = published.filter(item => Number(item.anchor_slot) === Number(item.slot_number));
     if (!mosaicRef.current) { mosaicRef.current = document.createElement('canvas'); mosaicRef.current.width = MAP_SIZE; mosaicRef.current.height = MAP_SIZE; }
     if (mosaicDirty.current) {
@@ -328,7 +352,7 @@ function App() {
         }
       }
     }
-    if (hoveredSlot && scale >= 16 && !published.some(item => Number(item.slot_number) === hoveredSlot)) {
+    if (hoveredSlot && !published.some(item => Number(item.slot_number) === hoveredSlot)) {
       const { x, y } = slotCoordinates(hoveredSlot); const p = toScreen(x, y);
       ctx.save(); ctx.fillStyle = '#c4f06b'; ctx.shadowColor = '#c4f06b'; ctx.shadowBlur = 8;
       ctx.font = `${Math.min(18, Math.max(10, scale * .58))}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -767,6 +791,15 @@ function App() {
   const selectedPublished = selectedSlot && published.some(item => Number(item.slot_number) === selectedSlot);
   const hoveredPublished = hoveredSlot ? published.find(item => Number(item.slot_number) === hoveredSlot) : null;
 
+  const claimAvailableSpot = () => {
+    let slot = Math.floor(Math.random() * MAP_SIZE * MAP_SIZE) + 1;
+    const occupied = new Set(published.map(item => Number(item.slot_number)));
+    while (occupied.has(slot) && occupied.size < MAP_SIZE * MAP_SIZE) slot = slot % (MAP_SIZE * MAP_SIZE) + 1;
+    setShowSamples(false);
+    zoomToSlot(slot);
+  };
+  const claimedPercent = usedSlotCount == null ? null : usedSlotCount / 10000;
+
   return (
     <>
       <header className="topbar" id="top">
@@ -780,7 +813,7 @@ function App() {
             </> : <button className="button button-small button-outline" onClick={() => { setAuthMode('signin'); setAuthMessage(''); setDrawer('signin'); }}>Sign in</button>}
           </div>
         </div>
-        <section className="intro nav-hero"><div className="nav-hero-copy"><div className="eyebrow">A tiny space on a big canvas</div><h1>Make a little<br /><span>space yours.</span></h1></div><p>Choose a pixel, share your image, and leave your mark on a living canvas.</p><div className="intro-actions"><button className="button button-primary" onClick={() => { document.getElementById('canvas')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); changeZoom(8); }}>Explore the canvas <span>↘</span></button><span className="intro-hint">Every submission is reviewed before it goes live.</span></div></section>
+        <section className="intro nav-hero"><div className="nav-hero-copy"><div className="eyebrow">A tiny space on a big canvas</div><h1>Make a little<br /><span>space yours.</span></h1></div><p>Choose a pixel, share your image, and leave your mark on a living canvas.</p><div className="intro-actions"><button className="button button-primary claim-primary" onClick={claimAvailableSpot}>Claim your spot · 50 EGP <span>↗</span></button><span className="intro-hint review-promise">✓ Every submission is reviewed before it goes live.<br />One spot · 30 days · receipt checked privately</span><button className="text-button" onClick={() => document.getElementById('how-it-works')?.scrollIntoView({ behavior: 'smooth' })}>How it works ↓</button></div></section>
         {featuredChallenge && <div className="featured-challenge"><div><span className="eyebrow">Community vote · {featuredChallenge.title}</span><b>Monthly spotlight</b><small>Spot #{Number(featuredChallenge.slot_number).toLocaleString()} · {Number(featuredChallenge.vote_count).toLocaleString()} votes</small></div><img src={supabase.storage.from('published-images').getPublicUrl(featuredChallenge.image_path).data.publicUrl} alt={`Top voted spot in ${featuredChallenge.title}`} /><button onClick={() => document.getElementById('community-challenges')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>See the challenge ↘</button></div>}
       </header>
 
@@ -789,6 +822,7 @@ function App() {
 
         <section className="workspace" id="canvas">
           <div className="canvas-heading"><div><div className="eyebrow">The canvas <span className="prototype-tag">LIVE PROJECT</span></div><h2>One million possibilities</h2></div><div className="canvas-count"><strong>1,000,000</strong><span>numbered slots</span></div></div>
+          <section className="founding-progress" aria-label="Canvas progress" aria-busy={usedSlotCount == null}><div><span className="eyebrow">THE FOUNDING CHAPTER</span><h3>{claimedPercent == null ? 'Loading canvas progress…' : `${claimedPercent.toLocaleString('en-US', { maximumFractionDigits: 4 })}% claimed`}</h3><p>The first 100 spots start the story. Make one yours.</p></div><div className="founding-meter"><div className="meter-caption"><b>Founding 100 spots</b><span>{usedSlotCount == null ? '—' : Math.min(100, usedSlotCount)} / 100</span></div><progress aria-label="Published spots toward the first 100" max="100" value={Math.min(100, usedSlotCount || 0)} /><small>{usedSlotCount == null ? 'Checking availability…' : `${usedSlotCount.toLocaleString()} published · ${(1000000 - usedSlotCount).toLocaleString()} available across the full canvas`}</small></div></section>
           <div className="canvas-shell"><div className="canvas-toolbar"><div className="map-legend"><span className="legend-item"><i className="legend-free" /> Available</span><span className="legend-item"><i className="legend-live" /> Published</span><span className="legend-item"><i className="legend-selected" /> Selected</span></div><div className="zoom-controls"><button onClick={() => changeZoom(1 / 1.55)} aria-label="Zoom out">−</button><span>{currentScale.toFixed(currentScale < 10 ? 1 : 0)}×</span><button onClick={() => changeZoom(1.55)} aria-label="Zoom in">+</button><button className="reset-button" onClick={resetView}>Reset</button></div></div>
             <form className="discovery-search" onSubmit={searchCanvas}>
               <label className="discovery-keyword">Search creators or stories<input value={discoveryQuery} onChange={event => setDiscoveryQuery(event.target.value)} placeholder="Name or keyword" /></label>
@@ -804,9 +838,10 @@ function App() {
               <canvas ref={canvasRef} aria-label="Interactive map of one million numbered slots. Zoom in to select a slot." />
               {hoveredSlot && hoveredPoint && hoveredPublished && <div className="spot-hover-card" style={{ left: `${Math.min(hoveredPoint.x + 16, view.current.width - 242)}px`, top: `${Math.min(Math.max(hoveredPoint.y + 16, 8), view.current.height - 215)}px` }}><img src={hoveredPublished.imageUrl} alt="" /><div><b>{hoveredPublished.display_name}</b><span>Spot #{Number(hoveredPublished.anchor_slot || hoveredPublished.slot_number).toLocaleString()} · {Number(hoveredPublished.spot_size) || 1}×{Number(hoveredPublished.spot_size) || 1}</span><p>{hoveredPublished.description?.trim() || 'A place on the Million Pixel canvas.'}</p>{hoveredPublished.website_url && <a href={hoveredPublished.website_url} target="_blank" rel="noreferrer">Visit link ↗</a>}<small>{hoveredPublished.published_at ? `Published ${new Date(hoveredPublished.published_at).toLocaleDateString()}` : 'Published image'}</small></div></div>}
               {hoveredSlot && hoveredPoint && !hoveredPublished && <div className="slot-hover-label" style={{ left: `${Math.min(hoveredPoint.x + 12, view.current.width - 150)}px`, top: `${Math.max(hoveredPoint.y - 34, 8)}px` }}><b>Pixel #{hoveredSlot.toLocaleString()}</b><span>Available · click to choose</span></div>}
-              {currentScale < 1.3 && <div className="canvas-empty"><span>✳</span><b>Find your pixel</b><small>Zoom in and tap an open slot</small></div>}
+              {currentScale < 1.3 && showSamples && usedSlotCount != null && usedSlotCount < 100 && <div className="sample-gallery" onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()} onWheel={event => event.stopPropagation()}><div className="sample-gallery-head"><div><span className="eyebrow">IMAGINE WHAT WE CAN MAKE</span><h3>A little inspiration. A million possibilities.</h3></div><button onClick={() => setShowSamples(false)} aria-label="Close sample gallery and explore real canvas">×</button></div><div className="sample-art-grid">{Array.from({length: 8}, (_, index) => <SampleArt key={index} index={index} />)}</div><div className="sample-gallery-foot"><p><b>Sample artwork</b> · Illustrations only. These are not purchases or reserved spots.</p><button className="text-button" onClick={() => setShowSamples(false)}>Explore the real canvas ↗</button></div></div>}
+              {showGuide && <div className="claim-guide" role="status" onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}><span className="guide-square">＋</span><span className="guide-arrow">→</span><div><b>Choose a square. Share your story.</b><small>Click an available pixel → sign in → upload your image.</small></div><button onClick={() => setShowGuide(false)} aria-label="Dismiss quick guide">×</button></div>}
             </div>
-            <div className="canvas-footer"><span>Pinch or scroll to zoom · Drag to move · Zoom in to select</span><button className="text-button" onClick={() => { const slot = Math.floor(Math.random() * MAP_SIZE * MAP_SIZE) + 1; zoomToSlot(slot); }}>Pick a spot for me ↗</button></div>
+            <div className="canvas-footer"><button className="text-button" onClick={() => setShowGuide(true)}>Quick guide</button><span>Pinch or scroll to zoom · Drag to move · Zoom in to select</span><button className="text-button" onClick={() => { const slot = Math.floor(Math.random() * MAP_SIZE * MAP_SIZE) + 1; zoomToSlot(slot); }}>Pick a spot for me ↗</button></div>
           </div>
           <div className="discovery-grid">
             <article className="discovery-card"><div className="discovery-card-heading"><div><span className="eyebrow">Fresh on the canvas</span><h3>Live activity</h3></div><span className="activity-live"><i /> LIVE</span></div>
@@ -823,8 +858,10 @@ function App() {
           <section className="community-challenges" id="community-challenges"><div className="section-heading"><div><span className="eyebrow">Made by the community</span><h3>Monthly challenges</h3></div><small>Vote once per challenge; you can change your vote.</small></div><div className="challenge-grid">{challengeGroups.map(challenge => <article className="challenge-card" key={challenge.challenge_id}><div className="challenge-card-head"><div><h4>{challenge.title}</h4><p>{challenge.description}</p></div><span>Ends {new Date(challenge.ends_at).toLocaleDateString()}</span></div>{challenge.candidates.length ? <ol>{challenge.candidates.map(candidate => { const imageUrl = supabase.storage.from('published-images').getPublicUrl(candidate.image_path).data.publicUrl; return <li key={candidate.slot_number}><img src={imageUrl} alt="" /><div><b>{candidate.display_name}</b><small>Spot #{Number(candidate.slot_number).toLocaleString()} · {Number(candidate.vote_count).toLocaleString()} votes</small></div><button type="button" disabled={challengeBusy === `${challenge.challenge_id}:${candidate.slot_number}`} onClick={() => voteForChallenge(challenge.challenge_id, candidate.slot_number)}>{challengeBusy === `${challenge.challenge_id}:${candidate.slot_number}` ? 'Saving…' : 'Vote'}</button></li>; })}</ol> : <p className="challenge-empty">Add the tag <b>{challenge.tag_key}</b> to a spot to enter this challenge.</p>}</article>)}</div></section>
         </section>
 
-        <section className="how-it-works"><div className="eyebrow">Simple by design</div><div className="steps"><article><span>01</span><h3>Choose a slot</h3><p>Explore the canvas and pick a free numbered pixel.</p></article><article><span>02</span><h3>Send your image</h3><p>Add your name and contact, plus payment proof for review.</p></article><article><span>03</span><h3>Go live</h3><p>Once approved, your image appears on the canvas for 30 days.</p></article></div></section>
+        <section className="how-it-works" id="how-it-works"><div className="eyebrow">Simple by design</div><div className="steps"><article><span>01</span><h3>Choose a slot</h3><p>Explore the canvas and pick a free numbered pixel.</p></article><article><span>02</span><h3>Send your image</h3><p>Add your name and contact, plus payment proof for review.</p></article><article><span>03</span><h3>Go live</h3><p>Once approved, your image appears on the canvas for 30 days.</p></article></div></section>
         <section className="demo-note"><span className="note-icon">ⓘ</span><div><b>InstaPay &amp; Vodafone Cash · 50 EGP per spot</b><p>Transfer using your preferred app, then upload your receipt. Payments are checked manually before publishing. Your receipt is private and only available to you and authorized reviewers.</p></div></section>
+        <section className="trust-faq"><div><span className="eyebrow">KNOW BEFORE YOU CLAIM</span><h2>Small spot. Clear expectations.</h2><p>Every image and payment is reviewed by a person before publication.</p></div><div className="faq-list"><details><summary>What does 50 EGP include?</summary><p>One numbered spot with your image and story, displayed for 30 days after approval. This is a display placement, not ownership of land or a permanent listing.</p></details><details><summary>How do payment and approval work?</summary><p>Choose a spot, sign in, upload your image and transfer 50 EGP through InstaPay or Vodafone Cash. Add your transaction reference and receipt. Your spot goes live after a reviewer approves the submission and payment.</p></details><details><summary>Who can see my image and payment receipt?</summary><p>Published images and stories are visible to everyone. Your payment receipt stays private to you and authorized reviewers. Do not include private payment information in your public story.</p></details><details><summary>Are the sample illustrations real claims?</summary><p>No. The inspiration gallery is clearly marked sample artwork. It does not reserve spots or increase the published count. Close it to explore the real canvas.</p></details></div></section>
+        <footer className="founder-footer"><details><summary>A note from the creator <span>＋</span></summary><p>I built Million Pixel around a simple idea: a small space can hold a meaningful story. The vision is a shared canvas shaped by the people who join it, one image at a time. Thank you for helping write its first chapter.</p></details><span>One million places. Individual stories.</span></footer>
       </main>
 
       <div className={`scrim ${drawer || formOpen ? 'open' : ''}`} onClick={() => { if (drawer === 'signin') { window.localStorage.removeItem(PENDING_CLAIM_KEY); claimResumeRef.current = false; } setDrawer(''); setFormOpen(false); }} />
@@ -896,6 +933,12 @@ function AuthForm({ email, setEmail, password, setPassword, mode, setMode, onSub
     <button className="auth-switch" type="button" disabled={busy} onClick={() => setMode(mode === 'signup' ? 'signin' : 'signup')}>{mode === 'signup' ? 'Already have an account? Sign in' : 'New here? Create an account'}</button>
     {message && <p className="auth-message">{message}</p>}
   </>;
+}
+
+function SampleArt({ index }) {
+  const palettes = [['#e9ad6b','#633f73','#f6db91'],['#b3d7c8','#154d50','#e6efac'],['#f399a0','#3c3873','#ffd278'],['#547bc8','#192849','#a3d6e9'],['#d1c5eb','#613d86','#ee945c'],['#ded8ad','#374d3e','#c38b55'],['#e9ae8c','#a34e61','#fae6b8'],['#7fc4be','#224969','#d9efb4']];
+  const [bg, ink, accent] = palettes[index];
+  return <svg viewBox="0 0 160 160" role="img" aria-label={`Sample illustration ${index + 1}: ${index % 2 ? 'abstract shapes' : 'imaginary landscape'}`}><rect width="160" height="160" fill={bg} />{index % 2 === 0 ? <><circle cx="110" cy="48" r="27" fill={accent} /><path d="M0 125L47 53L90 113L122 81L160 130V160H0Z" fill={ink} /><path d="M0 145Q45 92 82 138T160 128V160H0Z" fill={accent} opacity=".7" /></> : <><circle cx="80" cy="80" r="58" fill={ink} /><path d="M23 80H137M80 23V137" stroke={bg} strokeWidth="17" /><circle cx="80" cy="80" r="24" fill={accent} /><rect x="17" y="17" width="16" height="16" fill={accent} /></>}</svg>;
 }
 
 export default App;
