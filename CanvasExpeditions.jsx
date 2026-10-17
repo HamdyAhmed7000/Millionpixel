@@ -1,8 +1,13 @@
 import { useEffect, useState } from 'react';
+import { isEgyptSlot, EGYPT_LANDMARKS } from './egyptBoundary.js';
 
 export const DISTRICTS = [{ zone: 'A', required: 0, x: 0, y: 0 }, { zone: 'B', required: 50000, x: 500, y: 0 }, { zone: 'C', required: 100000, x: 0, y: 500 }, { zone: 'D', required: 250000, x: 500, y: 500 }];
 export function districtForSlot(slot) { const x = (slot - 1) % 1000, y = Math.floor((slot - 1) / 1000); return DISTRICTS[(y >= 500 ? 2 : 0) + (x >= 500 ? 1 : 0)]; }
-export function randomOpenSlot(progress = 0) { const open = DISTRICTS.filter(zone => progress >= zone.required), zone = open[Math.floor(Math.random() * open.length)]; return (zone.y + Math.floor(Math.random() * 500)) * 1000 + zone.x + Math.floor(Math.random() * 500) + 1; }
+export function randomOpenSlot(progress = 0) {
+ const open = DISTRICTS.filter(zone => progress >= zone.required);
+ for (let attempt = 0; attempt < 2000; attempt++) { const zone = open[Math.floor(Math.random() * open.length)]; const slot = (zone.y + Math.floor(Math.random() * 500)) * 1000 + zone.x + Math.floor(Math.random() * 500) + 1; if (isEgyptSlot(slot)) return slot; }
+ return EGYPT_LANDMARKS[0].slot;
+}
 function countdown(end, now) { const seconds = Math.max(0, Math.floor((new Date(end).getTime() - now) / 1000)); if (!seconds) return 'Finished'; return `${Math.floor(seconds / 86400)}d ${Math.floor(seconds / 3600) % 24}h ${Math.floor(seconds / 60) % 60}m ${seconds % 60}s`; }
 function shuffled() { const pieces = Array.from({ length: 9 }, (_, i) => i); for (let i = 8; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pieces[i], pieces[j]] = [pieces[j], pieces[i]]; } if (pieces.every((value, i) => value === i)) [pieces[0], pieces[1]] = [pieces[1], pieces[0]]; return pieces; }
 
