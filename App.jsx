@@ -415,7 +415,15 @@ function App() {
         const p = toScreen(district.x, district.y), size = 500 * scale;
         ctx.fillStyle = 'rgba(5,10,14,.88)'; ctx.fillRect(p.x, p.y, size, size);
         ctx.strokeStyle = '#71818a'; ctx.lineWidth = 1; ctx.strokeRect(p.x, p.y, size, size);
-        if (size > 150) { ctx.save(); ctx.textAlign = 'center'; ctx.fillStyle = '#acbbc2'; ctx.font = 'bold 14px sans-serif'; ctx.fillText(`District ${district.zone} · Locked`, p.x + size / 2, p.y + size / 2); ctx.font = '11px sans-serif'; ctx.fillText(`${district.required.toLocaleString()} approved placements`, p.x + size / 2, p.y + size / 2 + 21); ctx.restore(); }
+        if (size > 150) {
+          const centers = { B: [735, 300], C: [280, 710], D: [620, 710] };
+          const center = toScreen(...(centers[district.zone] || [district.x + 250, district.y + 250]));
+          const narrow = district.zone === 'B';
+          ctx.save(); ctx.textAlign = 'center'; ctx.fillStyle = '#c1ccd0'; ctx.font = `bold ${narrow ? 10 : 13}px sans-serif`;
+          ctx.fillText(narrow ? 'District B' : `District ${district.zone} · Locked`, center.x, center.y, narrow ? Math.max(52, scale * 105) : 185);
+          ctx.font = `${narrow ? 9 : 10}px sans-serif`;
+          ctx.fillText(narrow ? 'Locked · 50k' : `${district.required.toLocaleString()} approved placements`, center.x, center.y + 15, narrow ? Math.max(52, scale * 105) : 185); ctx.restore();
+        }
       }
     }
     if (heatmap) {
@@ -516,7 +524,7 @@ function App() {
       ctx.save(); ctx.fillStyle = '#8eb6c4'; ctx.textAlign = 'center'; ctx.font = 'italic 11px Georgia';
       let label = toScreen(500, 55); ctx.fillText('Mediterranean Sea', label.x, label.y);
       label = toScreen(890, 470); ctx.save(); ctx.translate(label.x, label.y); ctx.rotate(-Math.PI / 3); ctx.fillText('Red Sea', 0, 0); ctx.restore();
-      ctx.fillStyle = '#d1c69a'; ctx.font = 'bold 11px sans-serif'; label = toScreen(730, 280); ctx.fillText('SINAI', label.x, label.y); ctx.restore();
+      if ((expeditionData?.approved_placements || 0) >= 50000) { ctx.fillStyle = '#d1c69a'; ctx.font = 'bold 11px sans-serif'; label = toScreen(730, 280); ctx.fillText('SINAI', label.x, label.y); } ctx.restore();
     }
   }, [published, selectedSlot, selectedSpotSize, hoveredSlot, previewStyle, visibleBounds, heatmap, territories, gameData, districtFog, expeditionData, puzzleMode]);
 
