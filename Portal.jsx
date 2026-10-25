@@ -7,6 +7,7 @@ import AdviceExchange from './AdviceExchange.jsx';
 import ComedyWill from './ComedyWill.jsx';
 import DreamCemetery from './DreamCemetery.jsx';
 import './community.css';
+import './auctionCyber.css';
 export default function Portal(){
  const path=location.pathname,lang=path.startsWith('/en/')?'en':'ar',ar=lang==='ar';
  const page=/\/auctions\/?$/.test(path)?'auctions':/\/advice\/?$/.test(path)?'advice':/\/comedy-will\/?$/.test(path)?'will':/\/dreams\/?$/.test(path)?'dreams':'home';
