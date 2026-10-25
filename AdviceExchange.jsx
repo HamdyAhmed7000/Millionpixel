@@ -26,7 +26,7 @@ export default function AdviceExchange({supabase,session,profile}){
   const version=++request.current;
   if(!supabase){setError(t.unavailable);setLoading(false);return;}
   try{
-   let q=supabase.from(tab==='mine'||tab==='admin'?'advice_posts':'advice_market').select(tab==='mine'||tab==='admin'?'*,advice_profiles(handle)':'*');
+   let q=supabase.from(tab==='mine'||tab==='admin'?'advice_posts':'advice_market').select(tab==='mine'||tab==='admin'?'*,advice_profiles!advice_posts_user_id_fkey(handle)':'*');
    if(tab==='mine')q=q.eq('user_id',session?.user?.id||'00000000-0000-0000-0000-000000000000');
    if(tab==='admin')q=q.eq('status','pending');
    if(viewUser)q=q.eq('user_id',viewUser);
@@ -63,7 +63,7 @@ export default function AdviceExchange({supabase,session,profile}){
     if(v.error||b.error)throw v.error||b.error;
     if(version===request.current){setVotes(Object.fromEntries(v.data.map(x=>[x.post_id,x.value])));setSaved(new Set(b.data.map(x=>x.post_id)));}
    }else{setVotes({});setSaved(new Set());}
-  }catch(err){if(version===request.current)setError(adviceError(err,t));}
+  }catch(err){if(version===request.current)setError(t.refreshFailed);}
   finally{if(version===request.current)setLoading(false);}
  },[supabase,session?.user?.id,profile?.is_admin,tab,search,category,contentLang,sort,since,page,viewUser,t]);
  useEffect(()=>{setLoading(true);load();const timer=setInterval(()=>{if(!document.hidden)load();},30000);return()=>{clearInterval(timer);request.current++;};},[load]);
