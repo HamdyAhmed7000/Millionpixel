@@ -3,7 +3,7 @@ create or replace function private.admin_content(p_action text,p_data jsonb) ret
 <<ctx>>
 declare actor uuid:=auth.uid();kind text:=p_data->>'kind';target uuid;reason text;old_status text;snap jsonb;rec private.content_removals;result jsonb;v_page integer:=least(10000,greatest(0,coalesce((p_data->>'page')::integer,0)));
 begin
- if actor is null or not coalesce(private.advice_admin(),false) then raise exception 'ADMIN_REQUIRED';end if;
+ if actor is null or not coalesce(private.can_moderate(kind),false) then raise exception 'ADMIN_REQUIRED';end if;
 
  if p_action='edit' then
   target:=(p_data->>'id')::uuid;reason:=trim(p_data->>'reason');
@@ -34,14 +34,15 @@ begin
 
  if p_action='list' then
   select coalesce(jsonb_agg(to_jsonb(r) order by r.created_at desc),'[]') into result from (
-   select q.*,c.removed_at,c.reason,c.removed_at is not null and c.restored_at is null as hidden from (
-    select 'image' kind,a.id,a.display_name title,a.description body,a.status,a.created_at,a.artwork_path media_path,'submission-files' bucket,a.slot_number::text extra from public.slot_claims a
-    union all select 'advice',a.id,a.title,a.body,a.status,a.created_at,null,null,null from public.advice_posts a
-    union all select 'dream',a.id,a.title,a.body,a.status,a.created_at,null,null,null from public.dream_posts a
-    union all select 'dream_comment',a.id,'تعليق / Comment',a.body,a.status,a.created_at,null,null,a.post_id::text from public.dream_comments a
-    union all select 'auction',a.id,a.title,a.description,a.status,a.created_at,a.assets->0->>'path','auction-media',a.bid_count::text from private.auction_lots a
-   )q left join private.content_removals c on c.kind=q.kind and c.target_id=q.id
-   where (kind is null or q.kind=kind) and (coalesce(p_data->>'status','')='' or (p_data->>'status'='hidden' and c.removed_at is not null and c.restored_at is null) or (q.status=p_data->>'status' and (c.removed_at is null or c.restored_at is not null))) and (coalesce(p_data->>'q','')='' or q.title ilike '%'||left(p_data->>'q',80)||'%')
+   select q.*,ap.handle,c.removed_at,c.reason,c.removed_at is not null and c.restored_at is null as hidden from (
+    select 'image' kind,a.id,a.display_name title,a.description body,a.status,a.created_at,a.artwork_path media_path,'submission-files' bucket,a.slot_number::text extra,a.user_id owner_id from public.slot_claims a
+    union all select 'advice',a.id,a.title,a.body,a.status,a.created_at,null,null,null,a.user_id from public.advice_posts a
+    union all select 'dream',a.id,a.title,a.body,a.status,a.created_at,null,null,null,a.user_id from public.dream_posts a
+    union all select 'dream_comment',a.id,'تعليق / Comment',a.body,a.status,a.created_at,null,null,a.post_id::text,a.user_id from public.dream_comments a
+    union all select 'auction',a.id,a.title,a.description,a.status,a.created_at,a.assets->0->>'path','auction-media',a.bid_count::text,a.seller_id from private.auction_lots a
+   )q left join public.advice_profiles ap on ap.user_id=q.owner_id left join private.content_removals c on c.kind=q.kind and c.target_id=q.id
+   where (kind is null or q.kind=kind) and (coalesce(p_data->>'status','')='' or (p_data->>'status'='hidden' and c.removed_at is not null and c.restored_at is null) or (q.status=p_data->>'status' and (c.removed_at is null or c.restored_at is not null))) and (coalesce(p_data->>'q','')='' or q.title ilike '%'||left(p_data->>'q',100)||'%' or ap.handle ilike '%'||left(p_data->>'q',100)||'%' or q.id::text=replace(p_data->>'q','#','') or (q.kind='image' and q.extra=replace(p_data->>'q','#','')) or (private.advice_admin() and exists(select 1 from auth.users u where u.id=q.owner_id and u.email ilike '%'||left(p_data->>'q',100)||'%')))
+   and (nullif(p_data->>'from','') is null or (q.created_at at time zone 'Africa/Cairo')::date>=(p_data->>'from')::date) and (nullif(p_data->>'to','') is null or (q.created_at at time zone 'Africa/Cairo')::date<=(p_data->>'to')::date)
    order by q.created_at desc,q.id limit 21 offset v_page*20
   )r;return jsonb_build_object('items',result);
  end if;
