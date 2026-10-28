@@ -15,7 +15,7 @@ begin
  if not owner and cardinality(scopes)=0 then raise exception 'ADMIN_REQUIRED';end if;
  select coalesce(a.handle,u.email,actor::text) into who from auth.users u left join public.advice_profiles a on a.user_id=u.id where u.id=actor;
  if p_action='notifications' then
-  return jsonb_build_object('pending',(select count(*) from(select 'image' kind from public.slot_claims where status='pending' union all select 'advice' from public.advice_posts where status='pending' union all select 'dream' from public.dream_posts where status='pending' union all select 'dream' from public.dream_comments where status='pending' union all select 'auction' from private.auction_lots where status='pending' union all select 'article' from private.frequency_comments where status='pending')r where private.can_moderate(r.kind)),
+  return jsonb_build_object('pending',(select count(*) from(select 'image' kind from public.slot_claims where status='pending' union all select 'advice' from public.advice_posts where status='pending' union all select 'dream' from public.dream_posts where status='pending' union all select 'dream' from public.dream_comments where status='pending' union all select 'auction' from private.auction_lots where status='pending' union all select 'article' from private.frequency_comments where status='pending' union all select 'article' from private.frequency_submissions where status='pending')r where private.can_moderate(r.kind)),
   'reports',(select count(*) from(select 'advice' kind from public.advice_reports where not resolved union all select 'dream' from public.dream_reports where not resolved union all select 'auction' from private.auction_reports where not resolved)r where private.can_moderate(r.kind)),
   'support',case when owner then(select count(*) from private.support_messages where not resolved) else 0 end,
   'high_bids',case when private.can_moderate('auction') then(select count(*) from private.auction_lots where status='live' and ends_at>now() and top_bid>=threshold) else 0 end,'threshold',threshold);
@@ -32,6 +32,7 @@ begin
     union all select 'dream_comment',id,'تعليق حلم / Dream comment',body,status,created_at,user_id,null,null,null,null from public.dream_comments
     union all select 'auction',id,title,description,status,created_at,seller_id,assets->0->>'path',null,'auction-media',null from private.auction_lots
     union all select 'article',id,title,body,status,created_at,author_id,null,null,null,null from private.frequency_articles
+    union all select 'frequency_submission',id,title,body,status,created_at,user_id,null,null,null,null from private.frequency_submissions
     union all select 'article_comment',id,'تعليق مقال / Article comment',body,status,created_at,user_id,null,null,null,null from private.frequency_comments
    )t left join public.advice_profiles a on a.user_id=t.user_id
    where private.can_moderate(case when t.kind='article_comment' then 'article' else t.kind end) and (coalesce(kind,'')='' or t.kind=kind) and (coalesce(p_data->>'status','pending')='' or t.status=coalesce(p_data->>'status','pending'))
@@ -59,7 +60,9 @@ begin
    begin
     kind:=entry->>'kind';target:=(entry->>'id')::uuid;
     if not private.can_moderate(case when kind='article_comment' then 'article' else kind end) then raise exception 'SCOPE_DENIED';end if;
-    if decision='remove' then
+    if kind='frequency_submission' and decision in('approve','reject') then
+     perform private.radio_api('review_submission',jsonb_build_object('id',target,'decision',decision,'reason',reason,'cover',p_data->>'cover'));
+    elsif decision='remove' then
      if kind='article' then perform private.frequency_api('remove',jsonb_build_object('id',target,'reason',reason));
      elsif kind='article_comment' then perform private.frequency_api('review_comment',jsonb_build_object('id',target,'status','removed','reason',reason));
      else perform private.admin_content('remove',jsonb_build_object('kind',kind,'id',target,'reason',reason));end if;
