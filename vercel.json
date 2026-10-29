@@ -55,6 +55,38 @@
     {
       "source": "/en/frequencies/:id",
       "destination": "/index.html"
+    },
+    {
+      "source": "/ar/movie-stories",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/ar/movie-stories/:id",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/ar/latest-news",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/ar/latest-news/:id",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/en/movie-stories",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/en/movie-stories/:id",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/en/latest-news",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/en/latest-news/:id",
+      "destination": "/index.html"
     }
   ]
 }
